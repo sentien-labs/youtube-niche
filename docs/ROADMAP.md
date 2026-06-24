@@ -10,6 +10,7 @@ making the recommendations harder to fool and easier to validate.
 - Authority concentration scoring for search pages dominated by a few channels.
 - Offline demo mode for first-run users without API keys.
 - Backtest and forward-test registries for accumulating validation evidence.
+- Public beta feedback loop through Evaluation feedback issues.
 
 ## Next
 

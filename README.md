@@ -296,13 +296,13 @@ tests/test_logic.py  offline tests
 
 ## Open Source Status
 
-The repo is being prepared for a public release. It already includes an MIT license, contribution
-guide, security policy, code of conduct, CI, issue templates, an offline demo, backtest registry,
-and forward-test snapshots.
+This is a public beta. It includes an MIT license, contribution guide, security policy, code of
+conduct, CI, issue templates, an offline demo, backtest registry, and forward-test snapshots.
 
 Before treating the scores as production-grade, the priority is to accumulate backtest/forward-test
 evidence, add external keyword-volume/RPM imports, and publish anonymized real example outputs.
-See [docs/ROADMAP.md](docs/ROADMAP.md).
+See [docs/ROADMAP.md](docs/ROADMAP.md), [docs/LAUNCH.md](docs/LAUNCH.md), and
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Tuning
 

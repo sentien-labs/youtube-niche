@@ -1,0 +1,14 @@
+# Core
+requests>=2.31
+
+# Signal G — content depth scoring (transcript fetch)
+youtube-transcript-api>=0.6
+
+# Signal F — Google Trends demand proxy (pulls in pandas)
+pytrends>=4.9
+
+# Signals E & G — LLM (comment-demand mining + depth scoring)
+anthropic>=0.40
+
+# Tests
+pytest>=8.0

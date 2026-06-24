@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtube-niche-finder"
+version = "0.1.0"
+description = "Find and validate high-demand, low-supply YouTube niche opportunities."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "vswarm-ai"}]
+keywords = ["youtube", "niche", "creator-tools", "market-research", "seo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "requests>=2.31",
+    "youtube-transcript-api>=0.6",
+    "pytrends>=4.9",
+    "anthropic>=0.40",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+youtube-niche = "youtube_niche.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/vswarm-ai/youtube-niche"
+Repository = "https://github.com/vswarm-ai/youtube-niche"
+Issues = "https://github.com/vswarm-ai/youtube-niche/issues"
+Roadmap = "https://github.com/vswarm-ai/youtube-niche/blob/main/docs/ROADMAP.md"
+
+[tool.setuptools.packages.find]
+include = ["youtube_niche*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

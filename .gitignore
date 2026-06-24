@@ -1,0 +1,9 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.cache/
+out/
+.env
+.secrets/

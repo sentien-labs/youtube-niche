@@ -22,12 +22,12 @@ backtest and forward-test harnesses.
 I’m looking for creators, SEO people, and data-minded builders to test it on niches they know well
 and tell me where the scoring is wrong.
 
-Repo: https://github.com/vswarm-ai/youtube-niche
+Repo: https://github.com/sentien-labs/youtube-niche
 
 Try without keys:
 
 ```bash
-git clone https://github.com/vswarm-ai/youtube-niche.git
+git clone https://github.com/sentien-labs/youtube-niche.git
 cd youtube-niche
 python3 -m venv venv
 source venv/bin/activate
@@ -56,7 +56,7 @@ The main thing I want from this launch is evaluation. If you know a niche well, 
 where the scoring is wrong. The repo includes an offline demo, issue template for evaluation
 feedback, backtest harness, and forward-test snapshots.
 
-Repo: https://github.com/vswarm-ai/youtube-niche
+Repo: https://github.com/sentien-labs/youtube-niche
 ```
 
 ## Feedback Request
@@ -71,4 +71,4 @@ The most useful feedback answers one of these:
 
 Use the Evaluation feedback issue template:
 
-https://github.com/vswarm-ai/youtube-niche/issues/new?template=evaluation_feedback.md
+https://github.com/sentien-labs/youtube-niche/issues/new?template=evaluation_feedback.md

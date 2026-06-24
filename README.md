@@ -1,6 +1,6 @@
 # YouTube Niche Finder
 
-[![CI](https://github.com/vswarm-ai/youtube-niche/actions/workflows/ci.yml/badge.svg)](https://github.com/vswarm-ai/youtube-niche/actions/workflows/ci.yml)
+[![CI](https://github.com/sentien-labs/youtube-niche/actions/workflows/ci.yml/badge.svg)](https://github.com/sentien-labs/youtube-niche/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Find **high-demand, high-monetization, low-supply** YouTube topics. Give it a niche; it expands
@@ -23,7 +23,7 @@ the ranking feels right or wrong.
 No API keys needed:
 
 ```bash
-git clone https://github.com/vswarm-ai/youtube-niche.git
+git clone https://github.com/sentien-labs/youtube-niche.git
 cd youtube-niche
 python3 -m venv venv
 source venv/bin/activate

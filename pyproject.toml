@@ -9,7 +9,7 @@ description = "Find and validate high-demand, low-supply YouTube niche opportuni
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
-authors = [{name = "vswarm-ai"}]
+authors = [{name = "sentien-labs"}]
 keywords = ["youtube", "niche", "creator-tools", "market-research", "seo"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -37,10 +37,10 @@ test = ["pytest>=8.0"]
 youtube-niche = "youtube_niche.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/vswarm-ai/youtube-niche"
-Repository = "https://github.com/vswarm-ai/youtube-niche"
-Issues = "https://github.com/vswarm-ai/youtube-niche/issues"
-Roadmap = "https://github.com/vswarm-ai/youtube-niche/blob/main/docs/ROADMAP.md"
+Homepage = "https://github.com/sentien-labs/youtube-niche"
+Repository = "https://github.com/sentien-labs/youtube-niche"
+Issues = "https://github.com/sentien-labs/youtube-niche/issues"
+Roadmap = "https://github.com/sentien-labs/youtube-niche/blob/main/docs/ROADMAP.md"
 
 [tool.setuptools.packages.find]
 include = ["youtube_niche*"]

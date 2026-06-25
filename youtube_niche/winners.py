@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 
 from .cache import Cache
+from .candidates import domain_probe_terms
 from .cli import _select_auth, analyze_topic
 from .config import Config
 from .domains import DOMAINS
@@ -145,6 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-vpd", type=float, default=None, help="min views/day for a breakout (default 100)")
     p.add_argument("--recent-days", type=int, default=None, help="how recent a breakout must be (default 180)")
     p.add_argument("--max-niches", type=int, default=15, help="how many discovered niches to score")
+    p.add_argument("--max-probe-terms", type=int, default=15,
+                   help="domain search probes for breakout mining after autocomplete expansion")
+    p.add_argument("--no-probe-autocomplete", action="store_true",
+                   help="mine winners only from the domain's hand-written probe terms")
     p.add_argument("--emit-subtopics", action="store_true",
                    help="write discovered niches to the subtopics registry (seeds --from-domain) and skip scoring")
     p.add_argument("--emit-out", default=None,
@@ -191,11 +196,18 @@ def main(argv=None) -> int:
                            cache_only=cfg.cache_only)
     llm = make_llm(cfg) if cfg.use_llm else None
 
+    probe_terms = domain_probe_terms(
+        domain,
+        max_terms=args.max_probe_terms,
+        include_autocomplete=not args.no_probe_autocomplete,
+        region=cfg.region_code,
+        lang=cfg.relevance_language,
+    )
     print(f"Mining breakouts in: {domain.name} "
           f"(small channels <= {cfg.small_channel_subs:,} subs, >= {cfg.winner_min_vpd:.0f} views/day, "
-          f"last {cfg.winner_recent_days}d)")
+          f"last {cfg.winner_recent_days}d, probes {len(probe_terms)})")
     try:
-        breakouts = find_breakouts(client, cfg, domain.terms, cfg.winner_recent_days,
+        breakouts = find_breakouts(client, cfg, probe_terms, cfg.winner_recent_days,
                                    cfg.winner_min_vpd, cfg.winner_max_per_term)
     except QuotaExceeded as e:
         print(f"quota stop: {e}")
@@ -248,6 +260,7 @@ def main(argv=None) -> int:
             print(f"  skipped ({type(e).__name__}: {e})")
             continue
         if row:
+            row["candidate_source"] = f"winners_{method}"
             results.append(row)
 
     if not results:

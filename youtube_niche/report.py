@@ -5,9 +5,13 @@ import csv
 import datetime as dt
 from pathlib import Path
 
+from .evidence import CHANNEL_EVIDENCE_FIELDS, VIDEO_EVIDENCE_FIELDS
+from .evidence_snapshot import capture_evidence_snapshot
+
 CSV_FIELDS = [
     "rank",
     "topic",
+    "candidate_source",
     "query_samples",
     "search_queries",
     "query_coverage",
@@ -53,6 +57,8 @@ CSV_FIELDS = [
     "sampled_results",
     "credible_density",
     "title_match_frac",
+    "semantic_title_match_frac",
+    "avg_relevance_score",
     "recent_credible_results",
     "median_age_days",
     "known_subscriber_results",
@@ -95,10 +101,12 @@ def _slug(s: str) -> str:
 def write_reports(results: list[dict], out_dir: str, niche: str):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     base = f"{_slug(niche)}-{stamp}"
     csv_path = out / f"{base}.csv"
     md_path = out / f"{base}.md"
+    video_evidence_path = out / f"{base}-video-evidence.csv"
+    channel_evidence_path = out / f"{base}-channel-evidence.csv"
 
     with csv_path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -107,6 +115,43 @@ def write_reports(results: list[dict], out_dir: str, niche: str):
             row = {k: _fmt(r.get(k)) for k in CSV_FIELDS}
             row["rank"] = i
             w.writerow(row)
+
+    video_rows, channel_rows = _evidence_sidecar_rows(results)
+    if video_rows:
+        _write_rows(
+            video_evidence_path,
+            [
+                "category_evidence_rank",
+                "opportunity_evidence_score",
+                "topic_rank",
+                "topic_opportunity",
+                "topic_demand",
+                "topic_supply_gap",
+                "topic_relevance_gate",
+                "candidate_source",
+                *VIDEO_EVIDENCE_FIELDS,
+            ],
+            video_rows,
+        )
+    if channel_rows:
+        _write_rows(
+            channel_evidence_path,
+            [
+                "category_channel_rank",
+                "opportunity_channel_score",
+                "topic_rank",
+                "topic_opportunity",
+                "topic_demand",
+                "topic_supply_gap",
+                "topic_relevance_gate",
+                "candidate_source",
+                *CHANNEL_EVIDENCE_FIELDS,
+            ],
+            channel_rows,
+        )
+    evidence_snapshot: tuple[Path, int] | None = None
+    if video_rows or channel_rows:
+        evidence_snapshot = capture_evidence_snapshot(results, out_dir, niche, source="report", top_n=10)
 
     lines = [
         f'# YouTube niche opportunities — "{niche}"',
@@ -118,11 +163,78 @@ def write_reports(results: list[dict], out_dir: str, niche: str):
         "not just trust a number.",
         "",
     ]
+    evidence_bits = []
+    if video_rows:
+        evidence_bits.append(f"`{video_evidence_path.name}`")
+    if channel_rows:
+        evidence_bits.append(f"`{channel_evidence_path.name}`")
+    if evidence_bits:
+        lines += [
+            f"_Video/channel evidence sidecars: {', '.join(evidence_bits)}._",
+            "",
+        ]
+    if evidence_snapshot:
+        snap_path, snap_rows = evidence_snapshot
+        lines += [
+            f"_Evidence snapshot registry: `{snap_path.name}` ({snap_rows} pending video/channel proof rows)._",
+            "",
+        ]
     for i, r in enumerate(results, 1):
         lines += _topic_block(i, r)
     md_path.write_text("\n".join(lines))
 
     return csv_path, md_path
+
+
+def _write_rows(path: Path, fields: list[str], rows: list[dict]) -> None:
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: _fmt(row.get(k)) for k in fields})
+
+
+def _evidence_sidecar_rows(results: list[dict]) -> tuple[list[dict], list[dict]]:
+    video_rows: list[dict] = []
+    channel_rows: list[dict] = []
+    for topic_rank, row in enumerate(results, 1):
+        context = {
+            "topic_rank": topic_rank,
+            "topic_opportunity": row.get("opportunity"),
+            "topic_demand": row.get("demand"),
+            "topic_supply_gap": row.get("supply_gap"),
+            "topic_relevance_gate": row.get("relevance_gate"),
+            "candidate_source": row.get("candidate_source"),
+        }
+        for ev in row.get("video_evidence") or []:
+            score = (row.get("opportunity") or 0.0) * (ev.get("evidence_score") or 0.0)
+            video_rows.append({**context, "opportunity_evidence_score": score, **ev})
+        for ev in row.get("channel_evidence") or []:
+            score = (row.get("opportunity") or 0.0) * (
+                ev.get("channel_trajectory_score")
+                if ev.get("channel_trajectory_score") is not None
+                else ev.get("channel_evidence_score") or 0.0
+            )
+            channel_rows.append({**context, "opportunity_channel_score": score, **ev})
+    video_rows.sort(
+        key=lambda r: (
+            float(r.get("opportunity_evidence_score") or 0.0),
+            float(r.get("views_per_day") or 0.0),
+        ),
+        reverse=True,
+    )
+    for i, row in enumerate(video_rows, 1):
+        row["category_evidence_rank"] = i
+    channel_rows.sort(
+        key=lambda r: (
+            float(r.get("opportunity_channel_score") or 0.0),
+            float(r.get("max_views_per_day") or 0.0),
+        ),
+        reverse=True,
+    )
+    for i, row in enumerate(channel_rows, 1):
+        row["category_channel_rank"] = i
+    return video_rows, channel_rows
 
 
 def _pct(x) -> str:
@@ -137,6 +249,25 @@ def _num(x) -> str:
             return f"{x / 1000:.1f}k"
         return str(round(x, 1))
     return str(x)
+
+
+def _short(text, n: int = 58) -> str:
+    text = " ".join(str(text or "").split())
+    if len(text) <= n:
+        return text
+    return text[: max(0, n - 1)].rstrip() + "…"
+
+
+def _vpd(x) -> str:
+    if x is None:
+        return "?/day"
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return "?/day"
+    if x >= 1000:
+        return f"{x / 1000:.1f}k/day"
+    return f"{round(x):.0f}/day"
 
 
 def _topic_block(i: int, r: dict) -> list[str]:
@@ -166,12 +297,41 @@ def _topic_block(i: int, r: dict) -> list[str]:
         f"{r.get('credible_results', '?')}/{r.get('sampled_results', '?')} relevant credible videos · "
         f"{r.get('recent_credible_results', '?')} recent credible · "
         f"title match {_pct(r.get('title_match_frac'))} · "
+        f"semantic {_pct(r.get('semantic_title_match_frac'))} · "
         f"median age {r.get('median_age_days', '?')}d · "
         f"{_pct(r.get('small_channel_frac'))} from small channels · "
         f"authority {_pct(r.get('authority_gap'))} "
         f"(top 3 channels {_pct(r.get('top3_channel_share'))}) · "
         f"beatability {_pct(r.get('outlier'))} (views÷subs ≈ {r.get('max_outlier_ratio', '?')}×)"
     )
+    video_evidence = [
+        e for e in (r.get("video_evidence") or [])
+        if e.get("evidence_role") != "off_topic_sample"
+    ][:3]
+    if video_evidence:
+        out.append(
+            "- **Top video proof** · "
+            + "; ".join(
+                f"{_short(e.get('title'))} ({_vpd(e.get('views_per_day'))}, "
+                f"{_num(e.get('subs'))} subs, {e.get('evidence_role')})"
+                for e in video_evidence
+            )
+        )
+    channel_evidence = [
+        e for e in (r.get("channel_evidence") or [])
+        if (e.get("relevant_videos") or 0) > 0
+    ][:3]
+    if channel_evidence:
+        out.append(
+            "- **Top channel proof** · "
+            + "; ".join(
+                f"{_short(e.get('channel_title'), 34)} "
+                f"({_vpd(e.get('max_views_per_day'))}, "
+                f"{e.get('relevant_videos')} relevant videos, "
+                f"trajectory {_pct(e.get('channel_trajectory_score'))})"
+                for e in channel_evidence
+            )
+        )
     qg = r.get("quality_gap")
     note = "" if qg is not None else f" _({r.get('quality_status', 'not scored')})_"
     out.append(

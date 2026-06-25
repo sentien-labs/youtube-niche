@@ -15,9 +15,11 @@ import os
 
 from .auth import ApiKeyAuth, OAuthAuth
 from .cache import Cache
+from .candidates import domain_seed_candidates, source_summary
 from .config import Config
 from .demo import demo_rows
 from .enrich import enrich
+from .evidence import channel_evidence_rows, video_evidence_rows
 from .external import match_external_metric
 from .forward import capture_score_snapshot, parse_horizons
 from .llm import LLM_PROVIDERS, make_llm
@@ -299,11 +301,24 @@ def analyze_topic(
         "confidence": confidence,
     }
     scored = opportunity_score(sub, cfg.weights)
+    evidence_knee = cfg.volume_knee_vpd
+    if domain is not None and getattr(domain, "volume_knee_vpd", None):
+        evidence_knee = domain.volume_knee_vpd
+    video_evidence = video_evidence_rows(
+        topic,
+        videos,
+        cfg,
+        volume_knee=evidence_knee,
+        now=as_of,
+    )
+    channel_evidence = channel_evidence_rows(topic, video_evidence)
 
     return {
         "topic": topic,
         **scored,
         **sub,
+        "video_evidence": video_evidence,
+        "channel_evidence": channel_evidence,
         "query_samples": len(queries),
         "search_queries": "; ".join(queries),
         "query_coverage": query_coverage,
@@ -323,6 +338,8 @@ def analyze_topic(
         "sampled_results": med_detail("supply_detail", "sampled_results"),
         "credible_density": med_detail("supply_detail", "credible_density"),
         "title_match_frac": med_detail("supply_detail", "title_match_frac"),
+        "semantic_title_match_frac": med_detail("supply_detail", "semantic_title_match_frac"),
+        "avg_relevance_score": med_detail("supply_detail", "avg_relevance_score"),
         "recent_credible_results": med_detail("supply_detail", "recent_credible_results"),
         "median_age_days": med_detail("supply_detail", "median_age_days"),
         "known_subscriber_results": med_detail("supply_detail", "known_subscriber_results"),
@@ -396,6 +413,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-domain",
         default=None,
         help='Stage 2: seed niches from a domain\'s curated sub-topics, e.g. "personal finance"',
+    )
+    p.add_argument(
+        "--candidate-mode",
+        choices=["hybrid", "expanded", "effective", "curated", "discovered"],
+        default="hybrid",
+        help=(
+            "candidate source for --from-domain. hybrid = discovered + autocomplete + curated; "
+            "expanded = autocomplete + curated "
+            "(default); effective = discovered if present else curated"
+        ),
     )
     p.add_argument("--seeds", default=None, help="comma-separated EXACT topics to score (skips autocomplete)")
     p.add_argument("--max-seeds", type=int, default=None, help="cap candidate topics (default 20)")
@@ -484,11 +511,10 @@ def main(argv=None) -> int:
         label = "shortlist"
         domain = None
         seeds = dedupe_topics(s.strip() for s in args.seeds.split(",") if s.strip())[: cfg.max_seeds]
+        seed_sources = {s: "explicit" for s in seeds}
         print(f"Scoring {len(seeds)} explicit topics: {seeds}")
     elif args.from_domain:
         from .domains import DOMAINS
-
-        from .subtopics import effective_subtopics
 
         match = [d for d in DOMAINS if args.from_domain.lower() in d.name.lower()]
         if not match:
@@ -499,14 +525,23 @@ def main(argv=None) -> int:
             )
             return 1
         domain = match[0]
-        subtopics, source = effective_subtopics(domain)
-        if not subtopics:
-            print(f"No sub-topics for {domain.name!r} (curated or discovered).", file=sys.stderr)
+        candidates = domain_seed_candidates(
+            domain,
+            max_seeds=cfg.max_seeds,
+            mode=args.candidate_mode,
+            region=cfg.region_code,
+            lang=cfg.relevance_language,
+        )
+        if not candidates:
+            print(f"No candidate topics for {domain.name!r}.", file=sys.stderr)
             return 1
         label = domain.name
-        seeds = dedupe_topics(subtopics)[: cfg.max_seeds]
-        # 'discovered' = data-derived from winners-first breakouts; 'curated' = hand-listed fallback.
-        print(f"Stage-2 drill-down into: {label} — {len(seeds)} sub-niches (source: {source})")
+        seeds = [c.topic for c in candidates]
+        seed_sources = {c.topic: c.source for c in candidates}
+        print(
+            f"Stage-2 drill-down into: {label} — {len(seeds)} candidate niches "
+            f"(mode: {args.candidate_mode}; sources: {source_summary(candidates)})"
+        )
     else:
         if not args.niche:
             print("ERROR: provide a niche, or --from-domain <name>.", file=sys.stderr)
@@ -521,6 +556,7 @@ def main(argv=None) -> int:
             region=cfg.region_code,
             lang=cfg.relevance_language,
         ))[: cfg.max_seeds]
+        seed_sources = {s: "seed_autocomplete" if s != args.niche.lower() else "seed" for s in seeds}
         print(f"  {len(seeds)} candidate topics: {seeds}")
 
     per_topic = cfg.per_topic_unit_estimate()
@@ -547,6 +583,7 @@ def main(argv=None) -> int:
             print(f"  skipped ({type(e).__name__}: {e})")
             continue
         if row:
+            row["candidate_source"] = seed_sources.get(topic)
             results.append(row)
 
     if not results:

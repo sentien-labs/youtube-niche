@@ -105,6 +105,27 @@ def test_title_relevance_filters_competition():
     assert scores["competition_gap"] > 0.9
 
 
+def test_semantic_relevance_is_useful_but_conservative():
+    from youtube_niche.relevance import relevance_score
+
+    assert relevance_score(
+        "tech companies canceling ai",
+        "Why Tech CEOs Are Quietly Cancelling Their AI Plans",
+    ).relevant
+    assert relevance_score(
+        "local ai agent setup",
+        "Run AI Agents Locally on a Mini PC",
+    ).relevant
+    assert not relevance_score(
+        "ai automation for real estate agents",
+        "Local AI agents are changing small business workflows",
+    ).relevant
+    assert not relevance_score(
+        "real estate syndication",
+        "Real Estate vs Stocks: Which Builds Wealth Faster?",
+    ).relevant
+
+
 def test_comment_demand_keyword_path():
     comments = [
         "Great video!",
@@ -990,6 +1011,25 @@ _Generated 20260625-123742. Holdout window: 2025-12-27 to now._
         assert "seed-source gap" in summary["assessment"]
         assert len(details) == 2
 
+        summary_expanded, _ = audit_backtest_report(
+            report_path,
+            registry_path,
+            candidate_mode="expanded",
+            autocomplete_fn=lambda q, region="US", lang="en": ["run ai agents locally"] if q == "ai tools for business" else [],
+        )
+        assert summary_expanded["candidate_mode"] == "expanded"
+        assert summary_expanded["candidate_covered"] == 1
+
+        summary2, details2 = audit_backtest_report(
+            report_path,
+            registry_path,
+            candidate_mode="hybrid",
+            autocomplete_fn=lambda q, region="US", lang="en": ["run ai agents locally"] if q == "ai tools for business" else [],
+        )
+        assert summary2["candidate_mode"] == "hybrid"
+        assert summary2["candidate_covered"] == 2
+        assert any("run ai agents locally" in d["candidate_matches"] for d in details2)
+
         csv_path, md_path = write_failure_audit([report_path], d, registry_path)
         assert csv_path.exists() and md_path.exists()
         text = md_path.read_text()
@@ -1237,7 +1277,21 @@ def test_grok_llm_provider_is_wired_without_requiring_login():
     ])
     assert temporal_args.candidate_source == "temporal"
     assert temporal_args.seed_window_days == 90
+    hybrid_args = build_backtest_parser().parse_args(["--fixtures", "--candidate-source", "hybrid"])
+    assert hybrid_args.candidate_source == "hybrid"
+    expanded_args = build_backtest_parser().parse_args(["--fixtures", "--candidate-source", "expanded"])
+    assert expanded_args.candidate_source == "expanded"
+    backtest_probe_args = build_backtest_parser().parse_args([
+        "--fixtures", "--max-probe-terms", "8", "--no-probe-autocomplete",
+    ])
+    assert backtest_probe_args.max_probe_terms == 8
+    assert backtest_probe_args.no_probe_autocomplete is True
     assert build_winners_parser().parse_args(["--domain", "AI", "--llm-provider", "grok"]).llm_provider == "grok"
+    winner_probe_args = build_winners_parser().parse_args([
+        "--domain", "AI", "--max-probe-terms", "7", "--no-probe-autocomplete",
+    ])
+    assert winner_probe_args.max_probe_terms == 7
+    assert winner_probe_args.no_probe_autocomplete is True
 
     backend = GrokCliBackend(bin="definitely-not-a-real-grok-binary")
     assert backend.name == "grok"
@@ -1286,6 +1340,246 @@ def test_fixtures_backtest_runs_keyless():
         from pathlib import Path
         reports = list(Path(d).glob("backtest-*.md"))
         assert reports and "Backtest" in reports[0].read_text()
+
+
+def test_fixtures_benchmark_runs_multi_window_and_calibrates_weights():
+    from pathlib import Path
+
+    from youtube_niche.benchmark import main as benchmark_main, window_cutoffs
+
+    assert window_cutoffs(
+        3,
+        90,
+        latest_cutoff="2026-06-01",
+        step_days=30,
+    ) == ["2026-06-01", "2026-05-02", "2026-04-02"]
+
+    with tempfile.TemporaryDirectory() as d:
+        rc = benchmark_main([
+            "--fixtures",
+            "--windows", "2",
+            "--candidate-source", "subtopics",
+            "--max-candidates", "3",
+            "--top-n", "5",
+            "--out-dir", d,
+            "--calibrate-weights",
+        ])
+        assert rc == 0
+        out = Path(d)
+        assert (out / "backtest-runs.csv").exists()
+        assert list(out.glob("benchmark-*.md"))
+        assert list(out.glob("backtest-aggregate-*.md"))
+        assert list(out.glob("weight-calibration-*.md"))
+        assert len(list(out.glob("backtest-*.csv"))) >= 2
+
+
+def test_weighting_grid_prefers_supply_when_supply_predicts_hits():
+    from youtube_niche.weighting import evaluate_weight_grid
+
+    rows = [
+        {"backtest_hit": "true", "opportunity": "0.6", "confidence": "1", "demand_gate": "1",
+         "demand": "0.55", "supply_gap": "0.95", "cpm_score": "0.6"},
+        {"backtest_hit": "true", "opportunity": "0.58", "confidence": "1", "demand_gate": "1",
+         "demand": "0.50", "supply_gap": "0.90", "cpm_score": "0.6"},
+        {"backtest_hit": "false", "opportunity": "0.7", "confidence": "1", "demand_gate": "1",
+         "demand": "0.95", "supply_gap": "0.25", "cpm_score": "0.6"},
+        {"backtest_hit": "false", "opportunity": "0.68", "confidence": "1", "demand_gate": "1",
+         "demand": "0.90", "supply_gap": "0.30", "cpm_score": "0.6"},
+    ]
+    baseline, evaluations = evaluate_weight_grid(rows)
+    best = evaluations[0]
+    assert baseline["auc"] == 0.0
+    assert best["auc"] == 1.0
+    assert best["weights"]["supply_gap"] >= best["weights"]["demand"]
+
+
+def test_hybrid_domain_candidates_keep_source_labels_and_broaden_coverage():
+    import json
+    from pathlib import Path
+
+    from youtube_niche.candidates import domain_seed_candidates, source_summary
+
+    def fake_autocomplete(q, region="US", lang="en"):
+        assert region == "US" and lang == "en"
+        return {
+            "ai tools": ["run ai agents locally", "ai tools for accountants"],
+            "ai automation": ["local business ai automation"],
+        }.get(q, [])
+
+    domain = Domain(
+        "AI",
+        ["ai tools", "ai automation"],
+        6,
+        18,
+        subtopics=["ai automation for real estate agents", "chatgpt for accountants"],
+    )
+    with tempfile.TemporaryDirectory() as d:
+        registry = Path(d) / "discovered.json"
+        registry.write_text(json.dumps({"AI": {"subtopics": ["tech companies canceling ai"]}}))
+        candidates = domain_seed_candidates(
+            domain,
+            max_seeds=6,
+            mode="hybrid",
+            subtopics_registry=registry,
+            autocomplete_fn=fake_autocomplete,
+            autocomplete_per_base=2,
+        )
+        expanded = domain_seed_candidates(
+            domain,
+            max_seeds=6,
+            mode="expanded",
+            subtopics_registry=registry,
+            autocomplete_fn=fake_autocomplete,
+            autocomplete_per_base=2,
+        )
+    topics = [c.topic for c in candidates]
+    expanded_topics = [c.topic for c in expanded]
+    sources = {c.topic: c.source for c in candidates}
+    assert topics[:3] == [
+        "tech companies canceling ai",
+        "run ai agents locally",
+        "ai tools for accountants",
+    ]
+    assert "tech companies canceling ai" not in expanded_topics
+    assert sources["tech companies canceling ai"] == "discovered"
+    assert sources["run ai agents locally"] == "domain_autocomplete"
+    assert "curated:2" in source_summary(candidates)
+
+
+def test_domain_probe_terms_expand_from_autocomplete_with_cap():
+    from youtube_niche.candidates import domain_probe_terms
+
+    def fake_autocomplete(q, region="US", lang="en"):
+        return {
+            "ai tools": ["run ai agents locally", "ai tools for accountants"],
+            "ai automation": ["local business ai automation"],
+        }.get(q, [])
+
+    domain = Domain("AI", ["ai tools", "ai automation"], 6, 18)
+    probes = domain_probe_terms(
+        domain,
+        max_terms=4,
+        autocomplete_fn=fake_autocomplete,
+        autocomplete_per_base=2,
+    )
+    assert probes == [
+        "ai tools",
+        "ai automation",
+        "run ai agents locally",
+        "ai tools for accountants",
+    ]
+
+
+def test_video_and_channel_evidence_rank_newcomer_breakouts():
+    from youtube_niche.evidence import channel_evidence_rows, video_evidence_rows
+
+    cfg = Config()
+    cfg.volume_knee_vpd = 100
+    videos = [
+        {
+            "video_id": "v1",
+            "title": "Run AI agents locally on a mini PC",
+            "channel_id": "c1",
+            "channel_title": "Small Lab",
+            "published_at": _iso_days_ago(10),
+            "views": 50_000,
+            "subs": 2_000,
+            "duration_s": 600,
+        },
+        {
+            "video_id": "v2",
+            "title": "Unrelated AI news",
+            "channel_id": "c2",
+            "channel_title": "News",
+            "published_at": _iso_days_ago(5),
+            "views": 500_000,
+            "subs": 1_000_000,
+            "duration_s": 600,
+        },
+    ]
+    video_rows = video_evidence_rows("run ai agents locally", videos, cfg, volume_knee=100)
+    assert video_rows[0]["video_id"] == "v1"
+    assert video_rows[0]["evidence_role"] == "newcomer_breakout"
+    assert video_rows[0]["video_url"] == "https://www.youtube.com/watch?v=v1"
+
+    channel_rows = channel_evidence_rows("run ai agents locally", video_rows)
+    assert channel_rows[0]["channel_id"] == "c1"
+    assert channel_rows[0]["newcomer_breakout_videos"] == 1
+    assert channel_rows[0]["repeat_breakout_rate"] == 1.0
+    assert channel_rows[0]["niche_specificity"] == 1.0
+    assert channel_rows[0]["channel_trajectory_score"] > 0.85
+
+
+def test_report_writes_video_and_channel_evidence_sidecars():
+    from pathlib import Path
+
+    row = {
+        "topic": "run ai agents locally",
+        "candidate_source": "domain_autocomplete",
+        "opportunity": 0.7,
+        "video_evidence": [{
+            "topic": "run ai agents locally",
+            "evidence_rank": 1,
+            "evidence_role": "newcomer_breakout",
+            "evidence_score": 0.9,
+            "title": "Run AI agents locally on a mini PC",
+            "video_id": "v1",
+            "video_url": "https://www.youtube.com/watch?v=v1",
+            "channel_title": "Small Lab",
+            "channel_id": "c1",
+            "channel_url": "https://www.youtube.com/channel/c1",
+            "views": 50_000,
+            "subs": 2_000,
+            "views_per_day": 5000,
+            "age_days": 10,
+            "relevant": True,
+            "small_channel": True,
+            "views_per_sub": 25,
+            "demand_score": 0.98,
+            "beatability_score": 0.96,
+            "newcomer_proof_score": 0.9,
+        }],
+        "channel_evidence": [{
+            "topic": "run ai agents locally",
+            "channel_rank": 1,
+            "channel_title": "Small Lab",
+            "channel_id": "c1",
+            "channel_url": "https://www.youtube.com/channel/c1",
+            "subscribers": 2_000,
+            "sampled_videos": 1,
+            "relevant_videos": 1,
+            "newcomer_breakout_videos": 1,
+            "total_views": 50_000,
+            "max_views_per_day": 5000,
+            "max_views_per_sub": 25,
+            "channel_evidence_score": 0.9,
+            "best_evidence_role": "newcomer_breakout",
+            "best_video_title": "Run AI agents locally on a mini PC",
+            "best_video_url": "https://www.youtube.com/watch?v=v1",
+        }],
+    }
+    with tempfile.TemporaryDirectory() as d:
+        csv_path, md_path = write_reports([row], d, "AI")
+        video_path = Path(d) / f"{csv_path.stem}-video-evidence.csv"
+        channel_path = Path(d) / f"{csv_path.stem}-channel-evidence.csv"
+        assert video_path.exists()
+        assert channel_path.exists()
+        snapshot_path = Path(d) / "evidence-snapshots.csv"
+        assert snapshot_path.exists()
+        video_header = video_path.read_text().splitlines()[0]
+        channel_header = channel_path.read_text().splitlines()[0]
+        assert "category_evidence_rank" in video_header
+        assert "opportunity_evidence_score" in video_header
+        assert "category_channel_rank" in channel_header
+        assert "opportunity_channel_score" in channel_header
+        assert "domain_autocomplete" in csv_path.read_text()
+        snapshot_text = snapshot_path.read_text()
+        assert "evidence_type" in snapshot_text
+        assert "pending" in snapshot_text
+        md = md_path.read_text()
+        assert "Top video proof" in md
+        assert "Top channel proof" in md
+        assert "Evidence snapshot registry" in md
 
 
 if __name__ == "__main__":

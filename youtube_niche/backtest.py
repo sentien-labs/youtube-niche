@@ -21,11 +21,13 @@ import sys
 from pathlib import Path
 
 from .cache import Cache
+from .candidates import domain_probe_terms, domain_seed_candidates
 from .cli import _select_auth, analyze_topic
 from .config import Config
 from .domains import DOMAINS
 from .enrich import enrich
 from .llm import LLM_PROVIDERS, make_llm
+from .relevance import relevance_score
 from .topics import normalize_token
 from .winners import _is_english, _is_junk, _is_short, discover_niches
 from .signals.volume import views_per_day
@@ -79,6 +81,8 @@ def tokens(s: str) -> set[str]:
 
 
 def text_matches_topic(text: str, topic: str) -> bool:
+    if relevance_score(topic, text).relevant:
+        return True
     tt = tokens(topic)
     if not tt:
         return False
@@ -108,12 +112,13 @@ def mine_holdout_breakouts(
     holdout_end: dt.datetime | None,
     min_vpd: float,
     max_per_term: int,
+    terms: list[str] | None = None,
 ) -> list[dict]:
     """Mine small-channel breakout videos published in the holdout window."""
     breakouts: list[dict] = []
     seen: set[str] = set()
     now = dt.datetime.now(dt.timezone.utc)
-    for term in domain.terms:
+    for term in (terms or domain.terms):
         try:
             res = client.search(
                 term,
@@ -204,6 +209,8 @@ def candidate_topics(
     source: str,
     max_candidates: int,
     subtopics_registry: str | Path | None = None,
+    region: str = "US",
+    lang: str = "en",
 ) -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
     if source in ("labels", "both"):
@@ -216,6 +223,18 @@ def candidate_topics(
         subtopics, subtopic_source = effective_subtopics(domain, subtopics_registry)
         label = "discovered_subtopic" if subtopic_source == "discovered" else "subtopic"
         candidates.extend((t, label) for t in subtopics)
+    if source in ("hybrid", "expanded"):
+        candidates.extend(
+            (c.topic, c.source)
+            for c in domain_seed_candidates(
+                domain,
+                max_seeds=max_candidates,
+                mode=source,
+                subtopics_registry=subtopics_registry,
+                region=region,
+                lang=lang,
+            )
+        )
 
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -265,8 +284,8 @@ def write_backtest_report(
 ) -> tuple[Path, Path]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    base = f"backtest-{_slug(domain_name)}-{stamp}"
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    base = f"backtest-{_slug(domain_name)}-{holdout_start.date().isoformat()}-{stamp}"
     csv_path = out / f"{base}.csv"
     md_path = out / f"{base}.md"
     fields = [
@@ -347,6 +366,7 @@ def compute_metrics(rows: list[dict], breakouts: list[dict], top_ks: list[int]) 
         by_source.setdefault(r.get("candidate_source") or "unknown", []).append(r)
     metrics["clean source"] = (
         "subtopic" if "subtopic" in by_source
+        else "curated" if "curated" in by_source
         else "temporal_discovered_subtopic" if "temporal_discovered_subtopic" in by_source
         else "(none — re-run with --candidate-source subtopics for a non-circular score)"
     )
@@ -355,6 +375,10 @@ def compute_metrics(rows: list[dict], breakouts: list[dict], top_ks: list[int]) 
     if "discovered_subtopic" in by_source:
         metrics["discovered_subtopic note"] = (
             "operational replay; clean only if the registry predates this holdout"
+        )
+    if any(src in by_source for src in ("discovered", "domain_autocomplete", "subtopic_autocomplete")):
+        metrics["hybrid source note"] = (
+            "operational replay of --from-domain hybrid; autocomplete is current, not historical"
         )
     if "temporal_discovered_subtopic" in by_source:
         metrics["temporal_discovered_subtopic note"] = (
@@ -391,7 +415,7 @@ def append_registry(
     exists = path.exists()
     generated_at = dt.datetime.now(dt.timezone.utc).isoformat()
     row = {
-        "run_id": dt.datetime.now().strftime("%Y%m%d-%H%M%S"),
+        "run_id": dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f"),
         "generated_at": generated_at,
         "domain": domain_name,
         "holdout_start": holdout_start.date().isoformat(),
@@ -461,6 +485,12 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
             # Clean (non-circular) headline = subtopic candidates only.
             "avg_subtopic_p@5": avg_metric("subtopic precision@5"),
             "avg_subtopic_r@5": avg_metric("subtopic recall@5"),
+            "avg_curated_p@5": avg_metric("curated precision@5"),
+            "avg_curated_r@5": avg_metric("curated recall@5"),
+            "avg_discovered_p@5": avg_metric("discovered precision@5"),
+            "avg_discovered_r@5": avg_metric("discovered recall@5"),
+            "avg_domain_autocomplete_p@5": avg_metric("domain_autocomplete precision@5"),
+            "avg_domain_autocomplete_r@5": avg_metric("domain_autocomplete recall@5"),
             "avg_discovered_subtopic_p@5": avg_metric("discovered_subtopic precision@5"),
             "avg_discovered_subtopic_r@5": avg_metric("discovered_subtopic recall@5"),
             "avg_temporal_discovered_subtopic_p@5": avg_metric("temporal_discovered_subtopic precision@5"),
@@ -473,12 +503,15 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     csv_path = out / f"backtest-aggregate-{stamp}.csv"
     md_path = out / f"backtest-aggregate-{stamp}.md"
     fields = [
         "domain", "runs", "avg_first_hit_rank", "hit_run_rate",
         "avg_subtopic_p@5", "avg_subtopic_r@5",
+        "avg_curated_p@5", "avg_curated_r@5",
+        "avg_discovered_p@5", "avg_discovered_r@5",
+        "avg_domain_autocomplete_p@5", "avg_domain_autocomplete_r@5",
         "avg_discovered_subtopic_p@5", "avg_discovered_subtopic_r@5",
         "avg_temporal_discovered_subtopic_p@5", "avg_temporal_discovered_subtopic_r@5",
         "avg_precision@5", "avg_recall@5", "avg_precision@10", "avg_recall@10",
@@ -495,16 +528,21 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
         "`subtopic P@5 / R@5` are the **clean, non-circular** numbers (curated topics, not "
         "labels read off the breakouts). `discovered P@5 / R@5` replay winners-first seeds and "
         "are clean only when those seeds predate the holdout. `temporal P@5 / R@5` mines those "
-        "seeds from a pre-holdout window inside the run. The mixed `P@5 / R@5` columns include "
-        "circular holdout-label candidates and read higher — treat them as a ceiling, not the score.",
+        "seeds from a pre-holdout window inside the run. `domain autocomplete P@5 / R@5` is the "
+        "new hybrid source slice, but it is current autocomplete, not historical. The mixed "
+        "`P@5 / R@5` columns include circular holdout-label candidates and read higher — treat "
+        "them as a ceiling, not the score.",
         "",
-        "| Domain | Runs | Hit Run Rate | Avg First Hit | subtopic P@5 | subtopic R@5 | discovered P@5 | discovered R@5 | temporal P@5 | temporal R@5 | P@5 | R@5 | P@10 | R@10 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Domain | Runs | Hit Run Rate | Avg First Hit | subtopic P@5 | subtopic R@5 | curated P@5 | curated R@5 | discovered P@5 | discovered R@5 | domain autocomplete P@5 | domain autocomplete R@5 | discovered-subtopic P@5 | discovered-subtopic R@5 | temporal P@5 | temporal R@5 | P@5 | R@5 | P@10 | R@10 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in summary_rows:
         lines.append(
             f"| {r['domain']} | {r['runs']} | {r['hit_run_rate']} | {r['avg_first_hit_rank']} | "
             f"{r['avg_subtopic_p@5']} | {r['avg_subtopic_r@5']} | "
+            f"{r['avg_curated_p@5']} | {r['avg_curated_r@5']} | "
+            f"{r['avg_discovered_p@5']} | {r['avg_discovered_r@5']} | "
+            f"{r['avg_domain_autocomplete_p@5']} | {r['avg_domain_autocomplete_r@5']} | "
             f"{r['avg_discovered_subtopic_p@5']} | {r['avg_discovered_subtopic_r@5']} | "
             f"{r['avg_temporal_discovered_subtopic_p@5']} | {r['avg_temporal_discovered_subtopic_r@5']} | "
             f"{r['avg_precision@5']} | {r['avg_recall@5']} | {r['avg_precision@10']} | {r['avg_recall@10']} |"
@@ -528,7 +566,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cutoff", default=None, help="holdout start date YYYY-MM-DD (default: today - holdout-days)")
     p.add_argument(
         "--candidate-source",
-        choices=["subtopics", "labels", "both", "effective", "temporal"],
+        choices=["subtopics", "labels", "both", "effective", "hybrid", "expanded", "temporal"],
         default="both",
     )
     p.add_argument("--subtopics-registry", default=None,
@@ -542,6 +580,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--top-k", default="5,10", help="comma-separated k values for precision/recall")
     p.add_argument("--min-vpd", type=float, default=None, help="breakout views/day threshold")
     p.add_argument("--max-per-term", type=int, default=None, help="breakouts kept per domain probe term")
+    p.add_argument("--max-probe-terms", type=int, default=15,
+                   help="domain search probes for breakout mining after autocomplete expansion")
+    p.add_argument("--no-probe-autocomplete", action="store_true",
+                   help="mine holdout breakouts only from hand-written domain probes")
     p.add_argument("--query-samples", type=int, default=None)
     p.add_argument("--top-n", type=int, default=None)
     p.add_argument("--with-llm", action="store_true", help="use LLM for holdout labels and quality scoring")
@@ -614,10 +656,21 @@ def main(argv=None) -> int:
 
     min_vpd = args.min_vpd if args.min_vpd is not None else cfg.winner_min_vpd
     max_per_term = args.max_per_term if args.max_per_term is not None else cfg.winner_max_per_term
+    probe_terms = domain_probe_terms(
+        domain,
+        max_terms=args.max_probe_terms,
+        include_autocomplete=not args.no_probe_autocomplete,
+        region=cfg.region_code,
+        lang=cfg.relevance_language,
+    )
     print(f"Backtesting {domain.name}: holdout {holdout_start.date()} to "
-          f"{holdout_end.date() if holdout_end else 'now'}")
+          f"{holdout_end.date() if holdout_end else 'now'} "
+          f"({len(probe_terms)} breakout probes)")
     try:
-        breakouts = mine_holdout_breakouts(client, cfg, domain, holdout_start, holdout_end, min_vpd, max_per_term)
+        breakouts = mine_holdout_breakouts(
+            client, cfg, domain, holdout_start, holdout_end, min_vpd, max_per_term,
+            terms=probe_terms,
+        )
     except CacheMiss as e:
         print(f"Cache-only miss while mining holdout breakouts: {e}")
         return 1
@@ -633,7 +686,8 @@ def main(argv=None) -> int:
         print(f"Temporal seed window: {seed_start.date()} to {seed_end.date()}")
         try:
             seed_breakouts = mine_holdout_breakouts(
-                client, cfg, domain, seed_start, seed_end, min_vpd, max_per_term
+                client, cfg, domain, seed_start, seed_end, min_vpd, max_per_term,
+                terms=probe_terms,
             )
         except CacheMiss as e:
             print(f"Cache-only miss while mining temporal seed breakouts: {e}")
@@ -656,6 +710,8 @@ def main(argv=None) -> int:
             args.candidate_source,
             args.max_candidates,
             subtopics_registry=args.subtopics_registry,
+            region=cfg.region_code,
+            lang=cfg.relevance_language,
         )
     if not candidates:
         print("No candidates to score.")

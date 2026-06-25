@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 from .backtest import simple_label_from_title, text_matches_topic
+from .candidates import domain_seed_candidates
 from .domains import DOMAINS
 from .subtopics import load_registry
 
@@ -109,7 +110,13 @@ def parse_backtest_markdown(path: str | Path) -> dict:
     }
 
 
-def audit_backtest_report(path: str | Path, registry_path: str | Path | None = None) -> tuple[dict, list[dict]]:
+def audit_backtest_report(
+    path: str | Path,
+    registry_path: str | Path | None = None,
+    candidate_mode: str | None = None,
+    max_candidates: int = 25,
+    autocomplete_fn=None,
+) -> tuple[dict, list[dict]]:
     """Return (summary, detail_rows) for one parsed backtest report."""
     report = parse_backtest_markdown(path)
     domain = _domain_for_name(report["domain"])
@@ -126,18 +133,36 @@ def audit_backtest_report(path: str | Path, registry_path: str | Path | None = N
         "clean-before-holdout" if discovered_clean
         else "after-or-unknown-holdout"
     )
+    candidate_topics: list[str] = []
+    if candidate_mode and domain:
+        kwargs = {}
+        if autocomplete_fn is not None:
+            kwargs["autocomplete_fn"] = autocomplete_fn
+        candidate_topics = [
+            c.topic for c in domain_seed_candidates(
+                domain,
+                max_seeds=max_candidates,
+                mode=candidate_mode,
+                subtopics_registry=registry_path,
+                **kwargs,
+            )
+        ]
 
     details = []
     curated_hits = 0
     discovered_hits = 0
+    candidate_hits = 0
     for breakout in report["breakouts"]:
         title = breakout["title"]
         curated_matches = _matches(title, curated)
         discovered_matches = _matches(title, discovered)
+        candidate_matches = _matches(title, candidate_topics) if candidate_topics else []
         if curated_matches:
             curated_hits += 1
         if discovered_matches:
             discovered_hits += 1
+        if candidate_matches:
+            candidate_hits += 1
         details.append({
             "report": report["path"],
             "domain": report["domain"],
@@ -145,6 +170,7 @@ def audit_backtest_report(path: str | Path, registry_path: str | Path | None = N
             "label": simple_label_from_title(title),
             "curated_matches": "; ".join(curated_matches),
             "discovered_matches": "; ".join(discovered_matches),
+            "candidate_matches": "; ".join(candidate_matches),
             "vpd": breakout["vpd"],
             "subs": breakout["subs"],
         })
@@ -170,6 +196,9 @@ def audit_backtest_report(path: str | Path, registry_path: str | Path | None = N
         "discovered_covered": discovered_hits,
         "curated_coverage": curated_hits / breakout_count if breakout_count else 0.0,
         "discovered_coverage": discovered_hits / breakout_count if breakout_count else 0.0,
+        "candidate_mode": candidate_mode or "",
+        "candidate_covered": candidate_hits if candidate_mode else "",
+        "candidate_coverage": candidate_hits / breakout_count if (candidate_mode and breakout_count) else "",
         "discovered_generated_at": str(discovered_entry.get("generated_at", "")),
         "discovered_timing": discovered_timing,
         "assessment": assessment,
@@ -178,12 +207,22 @@ def audit_backtest_report(path: str | Path, registry_path: str | Path | None = N
     return summary, details
 
 
-def audit_backtest_reports(paths: list[str | Path], registry_path: str | Path | None = None) -> tuple[list[dict], list[dict]]:
+def audit_backtest_reports(
+    paths: list[str | Path],
+    registry_path: str | Path | None = None,
+    candidate_mode: str | None = None,
+    max_candidates: int = 25,
+) -> tuple[list[dict], list[dict]]:
     summaries = []
     details = []
     for path in paths:
         try:
-            summary, rows = audit_backtest_report(path, registry_path)
+            summary, rows = audit_backtest_report(
+                path,
+                registry_path,
+                candidate_mode=candidate_mode,
+                max_candidates=max_candidates,
+            )
         except ValueError:
             continue
         summaries.append(summary)
@@ -195,8 +234,15 @@ def write_failure_audit(
     paths: list[str | Path],
     out_dir: str = "out",
     registry_path: str | Path | None = None,
+    candidate_mode: str | None = None,
+    max_candidates: int = 25,
 ) -> tuple[Path, Path]:
-    summaries, details = audit_backtest_reports(paths, registry_path)
+    summaries, details = audit_backtest_reports(
+        paths,
+        registry_path,
+        candidate_mode=candidate_mode,
+        max_candidates=max_candidates,
+    )
     if not summaries:
         raise ValueError("No backtest reports found to audit.")
 
@@ -209,7 +255,8 @@ def write_failure_audit(
     fields = [
         "domain", "holdout_start", "breakouts", "positive_candidates",
         "curated_covered", "discovered_covered", "curated_coverage",
-        "discovered_coverage", "discovered_timing", "discovered_generated_at",
+        "discovered_coverage", "candidate_mode", "candidate_covered", "candidate_coverage",
+        "discovered_timing", "discovered_generated_at",
         "assessment", "top_misses", "report",
     ]
     with csv_path.open("w", newline="") as f:
@@ -219,6 +266,8 @@ def write_failure_audit(
             out_row = dict(row)
             out_row["curated_coverage"] = round(float(out_row["curated_coverage"]), 4)
             out_row["discovered_coverage"] = round(float(out_row["discovered_coverage"]), 4)
+            if out_row.get("candidate_coverage") != "":
+                out_row["candidate_coverage"] = round(float(out_row["candidate_coverage"]), 4)
             w.writerow({k: out_row.get(k, "") for k in fields})
 
     lines = [
@@ -230,13 +279,14 @@ def write_failure_audit(
         "discovered-subtopic registry. Discovered coverage is useful operationally, but only clean "
         "validation evidence when the registry predates the tested holdout window.",
         "",
-        "| Domain | Breakouts | Candidate Hits | Curated Covered | Discovered Covered | Discovered Timing | Assessment |",
-        "|---|---:|---:|---:|---:|---|---|",
+        "| Domain | Breakouts | Candidate Hits | Curated Covered | Discovered Covered | Extra Mode | Extra Covered | Discovered Timing | Assessment |",
+        "|---|---:|---:|---:|---:|---|---:|---|---|",
     ]
     for row in summaries:
         lines.append(
             f"| {_md_cell(row['domain'])} | {row['breakouts']} | {row['positive_candidates']} | "
             f"{row['curated_covered']} | {row['discovered_covered']} | "
+            f"{_md_cell(row.get('candidate_mode'))} | {_md_cell(row.get('candidate_covered'))} | "
             f"{_md_cell(row['discovered_timing'])} | {_md_cell(row['assessment'])} |"
         )
 
@@ -250,13 +300,14 @@ def write_failure_audit(
             f"- Discovered registry generated: {row['discovered_generated_at'] or '(none)'}",
             f"- Top ranked misses: {row['top_misses'] or '(none)'}",
             "",
-            "| Breakout | Label | Curated Matches | Discovered Matches |",
-            "|---|---|---|---|",
+            "| Breakout | Label | Curated Matches | Discovered Matches | Extra Candidate Matches |",
+            "|---|---|---|---|---|",
         ]
         for detail in [d for d in details if d["report"] == row["report"]]:
             lines.append(
                 f"| {_md_cell(detail['breakout_title'])} | {_md_cell(detail['label'])} | "
-                f"{_md_cell(detail['curated_matches'])} | {_md_cell(detail['discovered_matches'])} |"
+                f"{_md_cell(detail['curated_matches'])} | {_md_cell(detail['discovered_matches'])} | "
+                f"{_md_cell(detail.get('candidate_matches'))} |"
             )
     md_path.write_text("\n".join(lines) + "\n")
     return csv_path, md_path
@@ -274,6 +325,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="backtest Markdown reports to audit (default: out/backtest-*.md)",
     )
     p.add_argument("--registry", default=None, help="optional discovered-subtopics registry")
+    p.add_argument(
+        "--candidate-mode",
+        choices=["hybrid", "expanded", "effective", "curated", "discovered"],
+        default=None,
+        help="also compare holdout breakout coverage against this generated candidate source",
+    )
+    p.add_argument("--max-candidates", type=int, default=25)
     p.add_argument("--out-dir", default="out")
     return p
 
@@ -282,7 +340,13 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     paths = [Path(p) for p in args.backtests] if args.backtests else sorted(Path("out").glob("backtest-*.md"))
     try:
-        csv_path, md_path = write_failure_audit(paths, args.out_dir, registry_path=args.registry)
+        csv_path, md_path = write_failure_audit(
+            paths,
+            args.out_dir,
+            registry_path=args.registry,
+            candidate_mode=args.candidate_mode,
+            max_candidates=args.max_candidates,
+        )
     except Exception as e:
         print(f"ERROR: {e}")
         return 1

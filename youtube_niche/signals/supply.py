@@ -10,6 +10,7 @@ import datetime as dt
 from collections import Counter
 from statistics import median
 
+from ..relevance import relevance_score
 from ..topics import topic_tokens
 from ..util import clamp01, saturating
 
@@ -50,10 +51,9 @@ def _title_relevant(v: dict, required_tokens: set[str]) -> bool:
 def filter_relevant_videos(videos: list[dict], topic: str | None) -> list[dict]:
     """Keep videos whose title appears to target the topic.
 
-    This is intentionally lexical and conservative; richer semantic matching can replace it later.
+    Uses semantic relevance with lexical fallback; see ``youtube_niche.relevance``.
     """
-    topic_tokens = _topic_tokens(topic)
-    return [v for v in videos if _title_relevant(v, topic_tokens)]
+    return [v for v in videos if relevance_score(topic, str(v.get("title", ""))).relevant]
 
 
 def supply_scores(
@@ -70,9 +70,9 @@ def supply_scores(
     now: dt.datetime | None = None,
 ):
     """Returns ({competition_gap, age_gap, small_channel_gap}, detail). Each gap in [0,1]."""
-    topic_tokens = _topic_tokens(topic)
     raw_credible = [v for v in videos if v["views"] >= min_views]
-    credible = [v for v in raw_credible if _title_relevant(v, topic_tokens)]
+    relevance_results = [relevance_score(topic, str(v.get("title", ""))) for v in raw_credible]
+    credible = [v for v, rel in zip(raw_credible, relevance_results) if rel.relevant]
     n_credible = len(credible)
 
     # C — fewer credible results => bigger gap. A dense top-result sample is also
@@ -140,6 +140,14 @@ def supply_scores(
         "sampled_results": sample_size,
         "credible_density": round(credible_density, 2),
         "title_match_frac": round((n_credible / len(raw_credible)), 2) if raw_credible else None,
+        "semantic_title_match_frac": round(
+            (sum(1 for r in relevance_results if r.method in {"semantic", "fuzzy"} and r.relevant) / len(raw_credible)),
+            2,
+        ) if raw_credible else None,
+        "avg_relevance_score": round(
+            sum(r.score for r in relevance_results) / len(relevance_results),
+            2,
+        ) if relevance_results else None,
         "recent_credible_results": len(recent_credible),
         "reported_total": total_results,  # YouTube's totalResults is unreliable; kept for context
         "median_age_days": round(med_age),

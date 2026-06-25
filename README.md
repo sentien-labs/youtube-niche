@@ -187,17 +187,20 @@ python -m youtube_niche.discover --domains insurance,crypto --terms 4   # subset
 
 # Stage 2 — find the niche inside the winning domain
 python -m youtube_niche "off-grid solar for vans"
-python -m youtube_niche --from-domain "personal finance"   # drill the domain's stage-2 seeds
+python -m youtube_niche --from-domain "personal finance"   # hybrid: discovered + autocomplete + curated
 
-# Winners-first — discover niches FROM proven small-channel breakouts (not a guessed list),
-# and write them back as the stage-2 seeds (--from-domain then prefers these data-derived niches)
+# Winners-first — discover niches FROM proven small-channel breakouts (not a guessed list).
+# It mines domain probes plus autocomplete-expanded probes, then writes data-derived seeds.
 python -m youtube_niche.winners --domain "personal finance" --emit-subtopics
 
 # Backtest — check whether high-ranked candidates match later small-channel breakouts
 python -m youtube_niche.backtest --domain "AI" --query-samples 2 --max-candidates 10
 python -m youtube_niche.backtest --domain "AI" --candidate-source effective   # replay --from-domain seeds
+python -m youtube_niche.backtest --domain "AI" --candidate-source hybrid      # replay new hybrid source mix
 python -m youtube_niche.backtest --domain "AI" --candidate-source temporal --cutoff 2026-01-01
+python -m youtube_niche.benchmark --domain "AI" --windows 4 --candidate-source temporal --calibrate-weights
 python -m youtube_niche.backtest --aggregate
+python -m youtube_niche.weighting --registry out/backtest-runs.csv
 python -m youtube_niche.audit --out-dir out   # no-quota audit of existing backtest miss reports
 
 # Forward-test — save today's scored topics for 30/60/90-day follow-up
@@ -212,15 +215,33 @@ edit freely. CPM is *not* available from the YouTube API; the registry is the cu
 hand-curated `domain.subtopics` missing this holdout's real small-channel breakouts, often because
 the curated lists skew toward niche minutiae while demand concentrates on broader themes.
 `winners --emit-subtopics` closes the loop: it mines real breakouts, reads the niches off them, and
-records them in a writable user registry. `--from-domain` reads the shipped seed registry plus that
-user overlay, then seeds stage 2 from data-derived niches (printing `source: discovered`) and falls
-back to the curated list for any domain not yet mined (`source: curated`).
+records them in a writable user registry. Winners-first broadens its breakout search from the
+domain's hand-written probes with YouTube autocomplete by default; use `--no-probe-autocomplete`
+for a stricter audit run. `--from-domain` defaults to a hybrid candidate list: discovered
+winners-first niches first, then YouTube autocomplete expansions from the domain probes, then the
+curated fallback list. Use `--candidate-mode expanded` to audit autocomplete + curated coverage
+without discovered topics, `--candidate-mode effective` for the older behavior (discovered if
+present, otherwise curated), or `--candidate-mode curated` / `--candidate-mode discovered` for
+source-specific audits.
+
+Scored reports also write sidecar CSVs ending in `-video-evidence.csv` and
+`-channel-evidence.csv`. These preserve the sampled videos/channels behind each topic score:
+views/day, subscribers, views/subscribers, title relevance, small-channel breakout role, and URLs.
+They include category-wide ranks so you can inspect the strongest video and channel proof across
+the whole report, not just inside one topic. The rank is based on a combined opportunity-evidence
+score: topic opportunity multiplied by the sampled video's or channel's proof strength.
+Reports also append the best proof rows to `out/evidence-snapshots.csv` with `pending` status, so
+the exact videos/channels that justified a category can be checked later instead of only the
+topic-level forecast.
 
 Useful flags:
 
 | Flag | Effect |
 |------|--------|
 | `--max-seeds N` | cap candidate topics (default 20) |
+| `--candidate-mode MODE` | for `--from-domain`: `hybrid` default, or `expanded`, `effective`, `curated`, `discovered` |
+| `--max-probe-terms N` | for `winners`/`backtest`: cap autocomplete-expanded breakout mining probes (default 15) |
+| `--no-probe-autocomplete` | for `winners`/`backtest`: mine breakouts only from hand-written domain probes |
 | `--top-n N` | search results scanned per seed (default 30) |
 | `--query-samples N` | search-query variants per topic; use 3 to reduce single-search noise |
 | `--alphabet-soup` | aggressive autocomplete expansion (more seeds) |
@@ -251,6 +272,18 @@ By default the harness disables comments, LLM quality, and Trends to reduce futu
 `--with-comments`, `--with-llm`, or `--with-trends` when you intentionally want those signals.
 Backtest runs append to `out/backtest-runs.csv`; use `python -m youtube_niche.backtest --aggregate`
 to generate a cross-run validation summary.
+
+For an 8+/10 validation process, prefer the multi-window runner:
+
+```bash
+python -m youtube_niche.benchmark --domain "AI" --windows 4 --candidate-source temporal --calibrate-weights
+```
+
+This repeats holdout windows, writes a benchmark manifest, aggregates source-sliced precision and
+recall, and optionally emits `weight-calibration-*.{csv,md}`. The weight report grid-searches
+conservative demand/supply/monetization mixes against actual backtest hits, then reports the best
+AUC and top-quartile lift. Treat the recommendation as evidence for a config change, not an
+automatic mutation of defaults.
 
 **Read the `subtopic` numbers, not the headline.** Metrics are split by candidate source.
 `subtopic` candidates are curated topics *not* derived from the holdout breakouts — the clean
@@ -370,7 +403,11 @@ youtube_niche/
   topics.py          topic normalization, dedupe, and lightweight clustering
   cli.py             orchestration / entrypoint
   backtest.py        retrospective proxy validation against holdout breakouts
+  benchmark.py       repeated temporal backtests + aggregate/weight-calibration loop
+  weighting.py       validation-calibrated top-level weight suggestions
   forward.py         forward-test snapshot capture and summaries
+  evidence.py        ranked video/channel proof rows
+  evidence_snapshot.py persistent video/channel proof registry
 tests/test_logic.py  offline tests
 ```
 
@@ -389,3 +426,12 @@ See [docs/ROADMAP.md](docs/ROADMAP.md), [docs/LAUNCH.md](docs/LAUNCH.md), and
 Weights and thresholds live in `youtube_niche/config.py` (`Weights`, `Config`). Start with the
 defaults, run a niche you know well, and adjust. Every component sub-score is in the CSV, which
 makes it easy to see which signal is driving a rank.
+
+For validation-led tuning, run several temporal benchmark windows first, then:
+
+```bash
+python -m youtube_niche.weighting --registry out/backtest-runs.csv
+```
+
+Only promote a new weight mix when it improves AUC/lift across enough non-circular windows to beat
+the current opportunity score by more than noise.

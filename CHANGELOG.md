@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Winners-first → stage-2 loop**: `winners --emit-subtopics` writes breakout-derived niches to
+  `discovered_subtopics.json`; `--from-domain` now prefers these data-derived seeds over the
+  hand-curated list (falls back to curated, reports `source:`).
+- **Community calibration**: `youtube_niche.community calibrate` pools resolved forward-test
+  snapshots into a score-vs-reality AUC curve; `validate` checks contributions. See `community/`.
+- **Forward-test `resolve`**: closes the forward loop by checking due snapshots against real
+  breakouts and marking hit/miss.
+- **Keyless fixtures**: `backtest --fixtures` runs the full pipeline with no API key or quota.
+- **Backtest precision split by candidate source** (`subtopic` = clean/non-circular vs
+  `holdout_label` = circular), surfaced in the aggregate.
+
+### Validation
+
+- First clean (`--candidate-source subtopics`) backtest across finance/AI/business returned ~0%
+  precision: curated subtopic lists do not match real breakouts (confirmed uncapped, offline). This
+  motivated the winners-first → stage-2 loop above.
+
 ## v0.1.0-public-beta
 
 Initial public beta release.

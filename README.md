@@ -164,6 +164,11 @@ python -m youtube_niche.discover --domains insurance,crypto --terms 4   # subset
 
 # Stage 2 — find the niche inside the winning domain
 python -m youtube_niche "off-grid solar for vans"
+python -m youtube_niche --from-domain "personal finance"   # drill the domain's stage-2 seeds
+
+# Winners-first — discover niches FROM proven small-channel breakouts (not a guessed list),
+# and write them back as the stage-2 seeds (--from-domain then prefers these data-derived niches)
+python -m youtube_niche.winners --domain "personal finance" --emit-subtopics
 
 # Backtest — check whether high-ranked candidates match later small-channel breakouts
 python -m youtube_niche.backtest --domain "AI" --query-samples 2 --max-candidates 10
@@ -176,6 +181,14 @@ python -m youtube_niche.forward summary
 
 The domain list and its (industry-estimate) CPM ranges live in `youtube_niche/domains.py` —
 edit freely. CPM is *not* available from the YouTube API; the registry is the curated input.
+
+**Discovered subtopics beat curated ones.** Backtesting showed the hand-curated `domain.subtopics`
+miss where breakouts actually happen (curated lists scored ~0% precision against real small-channel
+breakouts — they skew toward niche minutiae while demand concentrates on broader themes).
+`winners --emit-subtopics` closes the loop: it mines real breakouts, reads the niches off them, and
+records them in `youtube_niche/discovered_subtopics.json`. `--from-domain` then seeds stage-2 from
+those data-derived niches (printing `source: discovered`), falling back to the curated list for any
+domain not yet mined (`source: curated`).
 
 Useful flags:
 
@@ -213,18 +226,49 @@ By default the harness disables comments, LLM quality, and Trends to reduce futu
 Backtest runs append to `out/backtest-runs.csv`; use `python -m youtube_niche.backtest --aggregate`
 to generate a cross-run validation summary.
 
+**Read the `subtopic` numbers, not the headline.** Metrics are split by candidate source.
+`subtopic` candidates are curated topics *not* derived from the holdout breakouts — the only
+non-circular score. `holdout_label` candidates are read off the breakout titles, so they hit
+almost by construction and are flagged circular. For an honest run, use
+`--candidate-source subtopics`.
+
+**No API key? Try it keyless.** `python -m youtube_niche.backtest --fixtures` runs the whole
+backtest against built-in synthetic fixture data — no credentials, no quota. It's how CI and new
+contributors exercise the scoring/validation logic before wiring up real auth.
+
 ### Forward testing
 
 Use `--snapshot` on scoring runs, or capture any scored CSV with:
 
 ```bash
 python -m youtube_niche.forward capture out/some-score.csv --label "AI shortlist"
-python -m youtube_niche.forward summary
+python -m youtube_niche.forward summary   # how many checkpoints are pending / due
+python -m youtube_niche.forward resolve   # check due checkpoints against real breakouts
 ```
 
 This creates pending 30/60/90-day checkpoints in `out/forward-snapshots.csv`. The goal is to
 compare today's scores against future small-channel breakouts instead of relying only on
 retrospective proxy backtests.
+
+`resolve` closes the loop with zero leakage: for every checkpoint whose due date has passed, it
+mines small-channel breakout videos for that exact topic inside the prediction window
+`[created_at, due_at]`, then marks the row `checked` with a `breakout_count` and a hit/miss note
+(one search per topic, quota-guarded). Re-run it whenever `summary` shows rows are **due** — this
+is the honest, prospective validation the backtest can only approximate.
+
+### Community calibration — does the score actually work?
+
+The cleanest proof isn't one person's runs — it's *many*. Pool resolved snapshots (yours plus any
+contributed under [`community/`](community/)) into a score-vs-reality calibration curve:
+
+```bash
+python -m youtube_niche.community calibrate
+```
+
+The report's headline is **AUC**: the probability a niche that broke out was scored above one that
+didn't (`0.50` = the score is noise, `1.00` = perfect), plus a hit-rate-by-score-band table. This
+is the one number that says whether the tool earns its keep — and it gets more trustworthy with
+every contributor. See [`community/README.md`](community/README.md) to add your data (≈5 minutes).
 
 ## Quota — the real constraint
 

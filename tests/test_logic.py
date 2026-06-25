@@ -839,6 +839,203 @@ def test_retryable_errors_do_not_burn_quota():
         cache.close()
 
 
+def test_backtest_metrics_split_by_source():
+    """Per-source precision must separate circular holdout labels from clean subtopics."""
+    from youtube_niche.backtest import compute_metrics
+
+    breakouts = [{"video_id": "b1"}, {"video_id": "b2"}, {"video_id": "b3"}, {"video_id": "b4"}]
+    rows = [  # already ranked by opportunity
+        {"candidate_source": "holdout_label", "backtest_hit": True, "hit_video_ids": ["b1"]},
+        {"candidate_source": "subtopic", "backtest_hit": True, "hit_video_ids": ["b2"]},
+        {"candidate_source": "holdout_label", "backtest_hit": True, "hit_video_ids": ["b3"]},
+        {"candidate_source": "subtopic", "backtest_hit": False, "hit_video_ids": []},
+    ]
+    m = compute_metrics(rows, breakouts, [5])
+    assert m["clean source"] == "subtopic"
+    assert "holdout_label note" in m  # flagged as circular
+    # holdout labels hit 2/2; subtopics hit 1/2 — the honest, lower number
+    assert m["holdout_label precision@5"] == "1.00"
+    assert m["subtopic precision@5"] == "0.50"
+    assert m["precision@5"] == "0.75"  # mixed overall
+
+
+def test_resolve_due_snapshots_marks_hit_and_miss():
+    """resolve mines breakouts per due topic: a small-channel match is a hit; a giant is filtered."""
+    from youtube_niche.config import Config
+    from youtube_niche.forward import resolve_due_snapshots
+
+    now = dt.datetime(2026, 6, 24, tzinfo=dt.timezone.utc)
+
+    def created(days):
+        return (now - dt.timedelta(days=days)).isoformat()
+
+    def due(days_from_now):
+        return (now + dt.timedelta(days=days_from_now)).date().isoformat()
+
+    def pub_days_ago(age):
+        return (now - dt.timedelta(days=age)).isoformat().replace("+00:00", "Z")
+
+    class C:
+        def search(self, q, **k):
+            vid = "r1" if "rent" in q.lower() else "g1"
+            return {"items": [{"id": {"videoId": vid}}]}
+
+        def videos(self, ids):
+            meta = {  # vid: (title, views, age_days, duration, lang, channel)
+                "r1": ("Rent vs Buy a House in 2026", 300_000, 20, "PT10M", "en", "cr1"),
+                "g1": ("Backdoor Roth IRA explained", 500_000, 20, "PT10M", "en", "cg1"),
+            }
+            return {
+                v: {"id": v, "snippet": {"title": tt, "channelId": ch, "channelTitle": "x",
+                    "publishedAt": pub_days_ago(age), "defaultAudioLanguage": lang},
+                    "contentDetails": {"duration": dur}, "statistics": {"viewCount": str(views)}}
+                for v, (tt, views, age, dur, lang, ch) in meta.items() if v in ids
+            }
+
+        def channels(self, ids):
+            subs = {"cr1": 8_000, "cg1": 4_000_000}  # giant channel -> filtered out -> miss
+            return {c: {"id": c, "statistics": {"subscriberCount": str(subs[c])}} for c in ids}
+
+        def search_calls_remaining(self):
+            return 10
+
+    rows = [
+        {"topic": "rent vs buy a house", "created_at": created(40), "due_at": due(-10),
+         "horizon_days": "30", "status": "pending", "breakout_count": "", "checked_at": "", "notes": ""},
+        {"topic": "rent vs buy a house", "created_at": created(40), "due_at": due(50),
+         "horizon_days": "90", "status": "pending", "breakout_count": "", "checked_at": "", "notes": ""},
+        {"topic": "backdoor roth ira", "created_at": created(40), "due_at": due(-5),
+         "horizon_days": "30", "status": "pending", "breakout_count": "", "checked_at": "", "notes": ""},
+    ]
+    rows, summary = resolve_due_snapshots(rows, C(), Config(), now=now)
+    assert summary["due"] == 2 and summary["resolved"] == 2 and summary["searches"] == 2
+    assert rows[0]["status"] == "checked" and rows[0]["breakout_count"] == 1  # hit
+    assert rows[0]["notes"].startswith("hit:")
+    assert rows[1]["status"] == "pending"  # horizon not yet due
+    assert rows[2]["status"] == "checked" and rows[2]["breakout_count"] == 0  # giant -> miss
+
+
+def test_community_validation_flags_bad_rows():
+    from youtube_niche.community import validate_rows
+
+    assert validate_rows([{"topic": "x", "opportunity": "0.6", "status": "checked", "breakout_count": "2"}]) == []
+    assert any("required column" in m for m in validate_rows([{"topic": "x", "opportunity": "0.6"}]))
+    bad = validate_rows([{"topic": "x", "opportunity": "9", "status": "checked", "breakout_count": "-1"}])
+    assert any("opportunity in [0,1]" in m for m in bad)
+    assert any("breakout_count >= 0" in m for m in bad)
+    pending = [{"topic": "x", "opportunity": "0.6", "status": "pending", "breakout_count": ""}]
+    assert any("no resolved" in m for m in validate_rows(pending))
+
+
+def test_community_calibration_curve_and_auc():
+    from youtube_niche.community import calibration_curve
+
+    def row(opp, bc):
+        return {"topic": "t", "opportunity": str(opp), "status": "checked", "breakout_count": str(bc)}
+
+    # higher scores break out, lower scores don't -> perfect ranking
+    rows = [row(0.1, 0), row(0.15, 0), row(0.25, 0), row(0.45, 0),
+            row(0.55, 1), row(0.65, 2), row(0.85, 1), row(0.95, 3)]
+    bands, overall = calibration_curve(rows)
+    assert overall["resolved_rows"] == 8 and overall["hits"] == 4
+    assert overall["auc"] == 1.0  # every breakout outranks every non-breakout
+    assert overall["top_half_hit_rate"] == 1.0 and overall["bottom_half_hit_rate"] == 0.0
+    assert overall["monotonic"] is True
+    # pending rows are ignored
+    _, overall2 = calibration_curve(rows + [row(0.9, 0) | {"status": "pending"}])
+    assert overall2["resolved_rows"] == 8
+
+
+def test_scoring_golden_is_stable():
+    """Lock full-pipeline scoring (fixed dates + as_of) so logic changes are intentional, not silent.
+
+    Regenerate the expected numbers only when you deliberately change scoring math.
+    """
+    as_of = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+
+    def pub(days):
+        return (as_of - dt.timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
+    class C:
+        def search(self, q, **k):
+            return {"items": [{"id": {"videoId": v}} for v in ("g1", "g2", "g3")],
+                    "pageInfo": {"totalResults": 3}}
+
+        def videos(self, ids):
+            meta = {  # vid: (title, views, subs, age_days, duration)
+                "g1": ("Dividend growth investing for beginners", 200_000, 12_000, 60, "PT12M"),
+                "g2": ("My dividend growth portfolio update", 120_000, 8_000, 90, "PT10M"),
+                "g3": ("Dividend growth investing strategy 2026", 90_000, 30_000, 120, "PT9M"),
+            }
+            return {
+                v: {"id": v, "snippet": {"title": t, "channelId": "c" + v, "channelTitle": "x",
+                    "publishedAt": pub(age), "defaultAudioLanguage": "en"},
+                    "contentDetails": {"duration": dur}, "statistics": {"viewCount": str(views)}}
+                for v, (t, views, subs, age, dur) in meta.items() if v in ids
+            }
+
+        def channels(self, ids):
+            subs = {"cg1": 12_000, "cg2": 8_000, "cg3": 30_000}
+            return {c: {"id": c, "statistics": {"subscriberCount": str(subs[c])}} for c in ids}
+
+        def comment_threads(self, vid, pages=2):
+            return []
+
+    cfg = Config()
+    cfg.use_trends = cfg.use_llm = False
+    cfg.comment_videos = 0
+    row = analyze_topic("dividend growth investing", C(), None, cfg, as_of=as_of)
+    assert round(row["opportunity"], 3) == 0.372
+    assert round(row["opportunity_raw"], 3) == 0.737
+    assert round(row["demand"], 3) == 0.646
+    assert round(row["supply_gap"], 3) == 0.801
+    assert round(row["cpm_score"], 3) == 0.82
+    assert round(row["confidence"], 3) == 0.504
+
+
+def test_discovered_subtopics_registry_and_fallback():
+    from youtube_niche.subtopics import (
+        discovered_subtopics,
+        effective_subtopics,
+        save_discovered,
+    )
+
+    dom = Domain("Personal finance / investing", [], 12, 30,
+                 subtopics=["backdoor roth ira", "coast fire"])
+    with tempfile.TemporaryDirectory() as d:
+        path = f"{d}/reg.json"
+        # before any emit: fall back to the hand-curated list
+        subs, src = effective_subtopics(dom, path)
+        assert src == "curated" and subs == ["backdoor roth ira", "coast fire"]
+        # winners-first writes data-derived niches; they now take precedence
+        save_discovered(dom.name, ["social security timing", "retirement income", "debt free"],
+                        meta={"breakout_count": 11, "method": "llm"}, path=path)
+        assert discovered_subtopics(dom.name, path) == ["social security timing", "retirement income", "debt free"]
+        subs2, src2 = effective_subtopics(dom, path)
+        assert src2 == "discovered" and subs2[0] == "social security timing"
+        # a different domain with nothing recorded still falls back to curated
+        other = Domain("Other", [], 1, 2, subtopics=["x"])
+        assert effective_subtopics(other, path) == (["x"], "curated")
+
+
+def test_winners_emit_subtopics_flag_parses():
+    from youtube_niche.winners import build_parser
+
+    args = build_parser().parse_args(["--domain", "personal finance", "--emit-subtopics"])
+    assert args.emit_subtopics is True
+
+
+def test_fixtures_backtest_runs_keyless():
+    from youtube_niche.backtest import main as backtest_main
+
+    with tempfile.TemporaryDirectory() as d:
+        rc = backtest_main(["--fixtures", "--candidate-source", "subtopics", "--no-registry", "--out-dir", d])
+        assert rc == 0
+        from pathlib import Path
+        reports = list(Path(d).glob("backtest-*.md"))
+        assert reports and "Backtest" in reports[0].read_text()
+
+
 if __name__ == "__main__":
     import traceback
 

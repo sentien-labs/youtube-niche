@@ -267,6 +267,18 @@ def write_backtest_report(
     return csv_path, md_path
 
 
+def _precision_recall_at_k(ranked: list[dict], total_breakouts: int, k: int) -> tuple[float, float]:
+    """Precision = hit candidates / k; recall = unique breakout videos covered / all breakouts."""
+    top = ranked[:k]
+    hit_candidates = [r for r in top if r.get("backtest_hit")]
+    hit_ids: set[str] = set()
+    for r in top:
+        hit_ids.update(r.get("hit_video_ids", []))
+    precision = len(hit_candidates) / max(len(top), 1)
+    recall = len(hit_ids) / total_breakouts
+    return precision, recall
+
+
 def compute_metrics(rows: list[dict], breakouts: list[dict], top_ks: list[int]) -> dict:
     total_breakouts = max(len(breakouts), 1)
     metrics: dict[str, str] = {
@@ -276,16 +288,28 @@ def compute_metrics(rows: list[dict], breakouts: list[dict], top_ks: list[int]) 
     }
     first_hit = next((i for i, r in enumerate(rows, 1) if r.get("backtest_hit")), None)
     metrics["first hit rank"] = str(first_hit or "none")
+
+    # Split by candidate source. 'subtopic' candidates are curated topics NOT derived from the
+    # holdout breakouts — the only non-circular test. 'holdout_label' candidates ARE read off the
+    # breakout titles, so they hit almost by construction; reported separately, never as headline.
+    by_source: dict[str, list[dict]] = {}
+    for r in rows:  # rows arrive already sorted by opportunity, so sublists keep rank order
+        by_source.setdefault(r.get("candidate_source") or "unknown", []).append(r)
+    metrics["clean source"] = (
+        "subtopic" if "subtopic" in by_source
+        else "(none — re-run with --candidate-source subtopics for a non-circular score)"
+    )
+    if "holdout_label" in by_source:
+        metrics["holdout_label note"] = "circular by construction (labels read off the breakouts)"
+
     for k in top_ks:
-        top = rows[:k]
-        hit_candidates = [r for r in top if r.get("backtest_hit")]
-        hit_ids = set()
-        for r in top:
-            hit_ids.update(r.get("hit_video_ids", []))
-        precision = len(hit_candidates) / max(len(top), 1)
-        recall = len(hit_ids) / total_breakouts
-        metrics[f"precision@{k}"] = f"{precision:.2f}"
-        metrics[f"breakout recall@{k}"] = f"{recall:.2f}"
+        p, r = _precision_recall_at_k(rows, total_breakouts, k)
+        metrics[f"precision@{k}"] = f"{p:.2f}"
+        metrics[f"breakout recall@{k}"] = f"{r:.2f}"
+        for src in sorted(by_source):
+            ps, rs = _precision_recall_at_k(by_source[src], total_breakouts, k)
+            metrics[f"{src} precision@{k}"] = f"{ps:.2f}"
+            metrics[f"{src} recall@{k}"] = f"{rs:.2f}"
     return metrics
 
 
@@ -375,6 +399,9 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
             "runs": len(group),
             "avg_first_hit_rank": "" if not first_hits else f"{sum(first_hits) / len(first_hits):.1f}",
             "hit_run_rate": f"{len(first_hits) / max(len(group), 1):.2f}",
+            # Clean (non-circular) headline = subtopic candidates only.
+            "avg_subtopic_p@5": avg_metric("subtopic precision@5"),
+            "avg_subtopic_r@5": avg_metric("subtopic recall@5"),
             "avg_precision@5": avg_metric("precision@5"),
             "avg_recall@5": avg_metric("breakout recall@5"),
             "avg_precision@10": avg_metric("precision@10"),
@@ -388,6 +415,7 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
     md_path = out / f"backtest-aggregate-{stamp}.md"
     fields = [
         "domain", "runs", "avg_first_hit_rank", "hit_run_rate",
+        "avg_subtopic_p@5", "avg_subtopic_r@5",
         "avg_precision@5", "avg_recall@5", "avg_precision@10", "avg_recall@10",
     ]
     with csv_path.open("w", newline="") as f:
@@ -399,12 +427,17 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
         "",
         f"_Generated {stamp} from `{path}`._",
         "",
-        "| Domain | Runs | Hit Run Rate | Avg First Hit | P@5 | R@5 | P@10 | R@10 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "`subtopic P@5 / R@5` are the **clean, non-circular** numbers (curated topics, not "
+        "labels read off the breakouts). The mixed `P@5 / R@5` columns include circular "
+        "holdout-label candidates and read higher — treat them as a ceiling, not the score.",
+        "",
+        "| Domain | Runs | Hit Run Rate | Avg First Hit | subtopic P@5 | subtopic R@5 | P@5 | R@5 | P@10 | R@10 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in summary_rows:
         lines.append(
             f"| {r['domain']} | {r['runs']} | {r['hit_run_rate']} | {r['avg_first_hit_rank']} | "
+            f"{r['avg_subtopic_p@5']} | {r['avg_subtopic_r@5']} | "
             f"{r['avg_precision@5']} | {r['avg_recall@5']} | {r['avg_precision@10']} | {r['avg_recall@10']} |"
         )
     md_path.write_text("\n".join(lines))
@@ -417,6 +450,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Retrospective proxy backtest against small-channel breakout videos.",
     )
     p.add_argument("--domain", default=None, help='domain to backtest, e.g. "personal finance"')
+    p.add_argument("--fixtures", action="store_true",
+                   help="run against built-in keyless fixture data (no API key or quota)")
     p.add_argument("--aggregate", action="store_true", help="aggregate prior backtest runs from the registry")
     p.add_argument("--registry", default=None, help="registry CSV path (default: out/backtest-runs.csv)")
     p.add_argument("--no-registry", action="store_true", help="do not append this run to the registry")
@@ -462,33 +497,41 @@ def main(argv=None) -> int:
         print(f"Wrote aggregate:\n  {csv_path}\n  {md_path}")
         return 0
 
-    if not args.domain:
-        print("ERROR: provide --domain, or use --aggregate.", file=sys.stderr)
-        return 2
     cfg.use_llm = bool(args.with_llm)
     cfg.use_trends = bool(args.with_trends)
     if not args.with_comments:
         cfg.comment_videos = 0
 
-    match = [d for d in DOMAINS if args.domain.lower() in d.name.lower()]
-    if not match:
-        print(f"No domain matched {args.domain!r}. Known: {[d.name for d in DOMAINS]}", file=sys.stderr)
-        return 1
-    domain = match[0]
+    if args.fixtures:
+        from .fixtures import FixtureClient, fixture_domain
+        cfg.use_llm = cfg.use_trends = False
+        cfg.comment_videos = 0
+        domain = fixture_domain()
+        client = FixtureClient()
+        llm = None
+        print(f"FIXTURES MODE — keyless demo domain: {domain.name} (no API key/quota used)")
+    else:
+        if not args.domain:
+            print("ERROR: provide --domain, --fixtures, or --aggregate.", file=sys.stderr)
+            return 2
+        match = [d for d in DOMAINS if args.domain.lower() in d.name.lower()]
+        if not match:
+            print(f"No domain matched {args.domain!r}. Known: {[d.name for d in DOMAINS]}", file=sys.stderr)
+            return 1
+        domain = match[0]
+        auth = _select_auth(cfg, allow_missing=cfg.cache_only)
+        if auth is None and not cfg.cache_only:
+            return 2
+        client = YouTubeClient(auth, Cache(cfg.cache_path), daily_quota=cfg.daily_quota_units,
+                               reserve=cfg.quota_reserve, daily_search_limit=cfg.daily_search_limit,
+                               cache_only=cfg.cache_only)
+        llm = make_llm(cfg) if cfg.use_llm else None
 
     now = dt.datetime.now(dt.timezone.utc)
     holdout_start = _parse_date(args.cutoff) if args.cutoff else now - dt.timedelta(days=args.holdout_days)
     holdout_end = holdout_start + dt.timedelta(days=args.holdout_days) if args.cutoff else None
     if holdout_end and holdout_end > now:
         holdout_end = None
-
-    auth = _select_auth(cfg, allow_missing=cfg.cache_only)
-    if auth is None and not cfg.cache_only:
-        return 2
-    client = YouTubeClient(auth, Cache(cfg.cache_path), daily_quota=cfg.daily_quota_units,
-                           reserve=cfg.quota_reserve, daily_search_limit=cfg.daily_search_limit,
-                           cache_only=cfg.cache_only)
-    llm = make_llm(cfg) if cfg.use_llm else None
 
     min_vpd = args.min_vpd if args.min_vpd is not None else cfg.winner_min_vpd
     max_per_term = args.max_per_term if args.max_per_term is not None else cfg.winner_max_per_term

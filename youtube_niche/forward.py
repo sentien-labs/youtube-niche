@@ -115,6 +115,129 @@ def capture_from_csv(score_csv: Path, out_dir: str, label: str | None, source: s
     return p, n
 
 
+def _parse_dt(s: str | None) -> dt.datetime | None:
+    """Parse an ISO datetime (created_at) or a date (due_at) to an aware UTC datetime."""
+    if not s:
+        return None
+    try:
+        d = dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        try:
+            day = dt.date.fromisoformat(str(s))
+        except ValueError:
+            return None
+        return dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
+
+
+def _iso_z(t: dt.datetime) -> str:
+    return t.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def mine_topic_breakouts(client, cfg, topic: str, since: dt.datetime, until: dt.datetime,
+                         min_vpd: float, now: dt.datetime) -> list[dict]:
+    """Small-channel, title-relevant breakout videos for one topic in [since, until]."""
+    # Lazy imports: winners imports forward at module load, so importing winners up top would cycle.
+    from .backtest import text_matches_topic
+    from .enrich import enrich
+    from .signals.volume import views_per_day
+    from .winners import _is_english, _is_junk, _is_short
+
+    try:
+        res = client.search(
+            topic, max_results=cfg.top_n, order="viewCount",
+            published_after=_iso_z(since), published_before=_iso_z(until),
+            region=cfg.region_code, relevance_language=cfg.relevance_language,
+        )
+    except Exception:
+        return []
+    try:
+        records = enrich(client, res.get("items", []), cfg)
+    except Exception:
+        return []
+    out: list[dict] = []
+    for v in records:
+        subs = v.get("subs")
+        if v["views"] < cfg.min_view_floor or subs is None or subs <= 0 or subs > cfg.small_channel_subs:
+            continue
+        if _is_short(v) or _is_junk(v) or not _is_english(v):
+            continue
+        if not text_matches_topic(v.get("title", ""), topic):
+            continue
+        vpd = views_per_day(v, now)
+        if vpd is None or vpd < min_vpd:
+            continue
+        v["_vpd"] = vpd
+        out.append(v)
+    return out
+
+
+def resolve_due_snapshots(rows: list[dict], client, cfg, now: dt.datetime | None = None,
+                          min_vpd: float | None = None, max_searches: int | None = None) -> tuple[list[dict], dict]:
+    """For each pending row whose due date has passed, mine breakouts in its prediction window
+    [created_at, due_at] and mark it checked with a hit/miss + breakout count. One search per topic."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    today = now.date()
+    min_vpd = cfg.winner_min_vpd if min_vpd is None else min_vpd
+
+    due_idx = []
+    for i, r in enumerate(rows):
+        if (r.get("status") or "pending") != "pending":
+            continue
+        due = _parse_dt(r.get("due_at"))
+        if due is not None and due.date() <= today:
+            due_idx.append(i)
+
+    groups: dict[str, list[int]] = {}
+    for i in due_idx:
+        groups.setdefault(rows[i].get("topic") or "", []).append(i)
+
+    resolved = 0
+    searches = 0
+    for topic, idxs in groups.items():
+        if not topic:
+            continue
+        if max_searches is not None and searches >= max_searches:
+            break
+        # cache-only reads cost no real quota, so don't let a spent daily budget block them.
+        if (not getattr(cfg, "cache_only", False)
+                and hasattr(client, "search_calls_remaining")
+                and client.search_calls_remaining() < 1):
+            break
+        sinces = [d for d in (_parse_dt(rows[i].get("created_at")) for i in idxs) if d]
+        since = min(sinces) if sinces else now - dt.timedelta(days=90)
+        breakouts = mine_topic_breakouts(client, cfg, topic, since, now, min_vpd, now)
+        searches += 1
+        for i in idxs:
+            r = rows[i]
+            c_dt = _parse_dt(r.get("created_at")) or since
+            d_dt = _parse_dt(r.get("due_at"))
+            upper = (d_dt + dt.timedelta(days=1)) if d_dt else now  # due date inclusive
+            window = [
+                b for b in breakouts
+                if (pub := _parse_dt(b.get("published_at"))) is not None and c_dt <= pub < upper
+            ]
+            window.sort(key=lambda b: b.get("_vpd", 0), reverse=True)
+            r["status"] = "checked"
+            r["checked_at"] = today.isoformat()
+            r["breakout_count"] = len(window)
+            r["notes"] = (
+                "hit: " + " | ".join(b.get("title", "")[:60] for b in window[:2])
+                if window else "miss"
+            )
+            resolved += 1
+    return rows, {"due": len(due_idx), "resolved": resolved, "searches": searches}
+
+
+def rewrite_snapshot_rows(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SNAPSHOT_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") for k in SNAPSHOT_FIELDS})
+
+
 def summarize_snapshots(path: Path, out_dir: str) -> tuple[Path, Path]:
     if not path.exists():
         raise FileNotFoundError(f"No snapshot registry found: {path}")
@@ -182,6 +305,15 @@ def build_parser() -> argparse.ArgumentParser:
     summ = sub.add_parser("summary", help="summarize pending/due snapshot rows")
     summ.add_argument("--out-dir", default="out")
     summ.add_argument("--snapshot-path", default=None)
+
+    res = sub.add_parser("resolve", help="check due snapshots against actual breakouts; mark hit/miss")
+    res.add_argument("--out-dir", default="out")
+    res.add_argument("--snapshot-path", default=None)
+    res.add_argument("--min-vpd", type=float, default=None, help="breakout views/day threshold")
+    res.add_argument("--max-searches", type=int, default=None, help="cap searches this run (quota guard)")
+    res.add_argument("--cache-only", action="store_true", help="only use cached YouTube responses")
+    res.add_argument("--region-code", default=None)
+    res.add_argument("--relevance-language", default=None)
     return p
 
 
@@ -210,7 +342,55 @@ def main(argv=None) -> int:
             return 1
         print(f"Wrote:\n  {csv_path}\n  {md_path}")
         return 0
+    if args.cmd == "resolve":
+        return _resolve_main(args)
     return 2
+
+
+def _resolve_main(args) -> int:
+    # Lazy imports: cli imports forward at module load, so importing cli up top would cycle.
+    from .cache import Cache
+    from .cli import _select_auth
+    from .config import Config
+    from .youtube_client import YouTubeClient
+
+    cfg = Config.from_env(
+        out_dir=args.out_dir,
+        region_code=args.region_code,
+        relevance_language=args.relevance_language,
+        cache_only=args.cache_only or None,
+    )
+    path = snapshot_path(cfg.out_dir, args.snapshot_path)
+    if not path.exists():
+        print(f"No snapshot registry found: {path}", file=sys.stderr)
+        return 1
+    with path.open() as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        print(f"No snapshot rows in {path}")
+        return 0
+
+    auth = _select_auth(cfg, allow_missing=cfg.cache_only)
+    if auth is None and not cfg.cache_only:
+        return 2
+    client = YouTubeClient(
+        auth, Cache(cfg.cache_path), daily_quota=cfg.daily_quota_units,
+        reserve=cfg.quota_reserve, daily_search_limit=cfg.daily_search_limit,
+        cache_only=cfg.cache_only,
+    )
+    rows, summary = resolve_due_snapshots(
+        rows, client, cfg, min_vpd=args.min_vpd, max_searches=args.max_searches
+    )
+    rewrite_snapshot_rows(path, rows)
+    hits = sum(
+        1 for r in rows
+        if r.get("status") == "checked" and str(r.get("breakout_count") or "0") not in ("", "0")
+    )
+    print(f"Resolved {summary['resolved']}/{summary['due']} due rows "
+          f"in {summary['searches']} searches -> {path}")
+    print(f"Checked rows with a breakout hit: {hits}")
+    print(f"Quota today: {client.units_spent()} units, {client.search_calls_used()} searches")
+    return 0
 
 
 if __name__ == "__main__":

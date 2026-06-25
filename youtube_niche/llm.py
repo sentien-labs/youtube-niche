@@ -5,6 +5,7 @@ Backends:
   - CodexCliBackend  : shells out to `codex exec` (OpenAI; uses its own auth)  [verified]
   - ClaudeCliBackend : shells out to `claude -p` (Anthropic CLI auth)
   - AgyCliBackend    : shells out to `agy -p` (Google/Gemini CLI auth)
+  - GrokCliBackend   : shells out to `grok -p` (xAI/Grok CLI auth)
 
 Every backend exposes `complete_json(system, user, tier)` and returns parsed JSON or None.
 The whole thing degrades gracefully: no working backend -> LLM.enabled is False -> signals skip.
@@ -17,6 +18,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+
+LLM_PROVIDERS = ["auto", "anthropic", "codex", "claude", "agy", "grok"]
 
 
 # --------------------------------------------------------------------- backends
@@ -99,15 +102,22 @@ class CodexCliBackend:
 
 
 class _StdoutCliBackend:
-    """Shared impl for CLIs that print the answer to stdout (`claude -p`, `agy -p`)."""
+    """Shared impl for CLIs that print the answer to stdout (`claude -p`, `agy -p`, `grok -p`)."""
 
     name = "stdout-cli"
     flag = "-p"
 
-    def __init__(self, bin: str, models: dict | None = None, timeout: int = 240):
+    def __init__(
+        self,
+        bin: str,
+        models: dict | None = None,
+        timeout: int = 240,
+        extra_args: list[str] | None = None,
+    ):
         self.bin = bin
         self.models = models or {}
         self.timeout = timeout
+        self.extra_args = extra_args or []
         self.available = shutil.which(bin) is not None
         # Empty cwd: these CLIs are agentic and will explore the project otherwise.
         self.workdir = tempfile.mkdtemp(prefix="yn-cli-") if self.available else None
@@ -115,8 +125,8 @@ class _StdoutCliBackend:
     def complete_json(self, system: str, user: str, tier: str = "cheap", max_tokens=None):
         if not self.available:
             return None
-        prompt = f"{system}\n\n{user}"
-        cmd = [self.bin, self.flag, prompt]
+        prompt = self._format_prompt(system, user)
+        cmd = [self.bin, *self.extra_args, self.flag, prompt]
         model = self.models.get(tier)
         if model:
             cmd += ["--model", model]
@@ -129,6 +139,9 @@ class _StdoutCliBackend:
         except Exception as e:
             print(f"  [llm:{self.name}] {type(e).__name__}: {e}")
             return None
+
+    def _format_prompt(self, system: str, user: str) -> str:
+        return f"{system}\n\n{user}"
 
 
 class ClaudeCliBackend(_StdoutCliBackend):
@@ -143,6 +156,35 @@ class AgyCliBackend(_StdoutCliBackend):
 
     def __init__(self, bin: str = "agy", models: dict | None = None, timeout: int = 300):
         super().__init__(bin, models, timeout)
+
+
+class GrokCliBackend(_StdoutCliBackend):
+    name = "grok"
+
+    def __init__(self, bin: str = "grok", models: dict | None = None, timeout: int = 300):
+        super().__init__(
+            bin,
+            models,
+            timeout,
+            extra_args=[
+                "--no-memory",
+                "--no-auto-update",
+                "--disable-web-search",
+                "--no-subagents",
+                "--no-plan",
+                "--permission-mode",
+                "bypassPermissions",
+            ],
+        )
+        if self.available and self.workdir:
+            self.extra_args += ["--cwd", self.workdir]
+
+    def _format_prompt(self, system: str, user: str) -> str:
+        # Grok CLI's single-turn mode can emit empty stdout for multi-line prompts; a flattened
+        # prompt with this prefix reliably preserves parseable JSON output.
+        compact_system = re.sub(r"\s+", " ", system).strip()
+        compact_user = re.sub(r"\s+", " ", user).strip()
+        return f"Reply only with JSON: System: {compact_system} User: {compact_user}"
 
 
 # ------------------------------------------------------------------------- LLM
@@ -220,7 +262,7 @@ class LLM:
 
 
 def make_llm(cfg) -> LLM:
-    """Build an LLM from cfg.llm_provider ('auto'|'anthropic'|'codex'|'claude'|'agy')."""
+    """Build an LLM from cfg.llm_provider."""
     provider = (getattr(cfg, "llm_provider", "auto") or "auto").lower()
 
     builders = {
@@ -232,6 +274,7 @@ def make_llm(cfg) -> LLM:
         "agy": lambda: AgyCliBackend(
             models={"cheap": "Gemini 3.5 Flash (Low)", "quality": "Gemini 3.1 Pro (Low)"}
         ),
+        "grok": lambda: GrokCliBackend(),
     }
 
     if provider != "auto" and provider not in builders:

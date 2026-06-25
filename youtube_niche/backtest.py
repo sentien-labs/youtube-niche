@@ -25,7 +25,8 @@ from .cli import _select_auth, analyze_topic
 from .config import Config
 from .domains import DOMAINS
 from .enrich import enrich
-from .llm import make_llm
+from .llm import LLM_PROVIDERS, make_llm
+from .topics import normalize_token
 from .winners import _is_english, _is_junk, _is_short, discover_niches
 from .signals.volume import views_per_day
 from .youtube_client import QuotaExceeded, YouTubeClient
@@ -35,6 +36,7 @@ STOP = {
     "your", "you", "is", "are", "and", "with", "my", "this", "that", "explained", "tutorial",
     "guide", "review", "vs", "2024", "2025", "2026", "ultimate", "complete", "beginners",
     "want", "here", "bare", "minimum", "setup", "build", "video", "videos", "quietly",
+    "beginner",
 }
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 GENERIC_MATCH_TOKENS = {
@@ -63,7 +65,12 @@ def _slug(s: str) -> str:
 
 
 def tokens(s: str) -> set[str]:
-    return {t for t in TOKEN_RE.findall(s.lower()) if len(t) > 1 and t not in STOP}
+    out = set()
+    for raw in TOKEN_RE.findall(s.lower()):
+        t = normalize_token(raw)
+        if len(t) > 1 and t not in STOP:
+            out.add(t)
+    return out
 
 
 def text_matches_topic(text: str, topic: str) -> bool:
@@ -162,12 +169,44 @@ def labels_from_breakouts(breakouts: list[dict], llm, max_labels: int) -> list[s
     return labels
 
 
-def candidate_topics(domain, labels: list[str], source: str, max_candidates: int) -> list[tuple[str, str]]:
+def discovered_candidates_from_breakouts(
+    breakouts: list[dict],
+    llm,
+    max_candidates: int,
+    source: str = "temporal_discovered_subtopic",
+) -> list[tuple[str, str]]:
+    """Extract seed topics from prior-window breakouts and label them as discovered candidates."""
+    labels = labels_from_breakouts(breakouts, llm, max_candidates)
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for topic in labels:
+        key = topic.lower().strip()
+        if key and key not in seen:
+            seen.add(key)
+            out.append((topic, source))
+        if len(out) >= max_candidates:
+            break
+    return out
+
+
+def candidate_topics(
+    domain,
+    labels: list[str],
+    source: str,
+    max_candidates: int,
+    subtopics_registry: str | Path | None = None,
+) -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
     if source in ("labels", "both"):
         candidates.extend((t, "holdout_label") for t in labels)
     if source in ("subtopics", "both"):
         candidates.extend((t, "subtopic") for t in domain.subtopics)
+    if source == "effective":
+        from .subtopics import effective_subtopics
+
+        subtopics, subtopic_source = effective_subtopics(domain, subtopics_registry)
+        label = "discovered_subtopic" if subtopic_source == "discovered" else "subtopic"
+        candidates.extend((t, label) for t in subtopics)
 
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -290,17 +329,28 @@ def compute_metrics(rows: list[dict], breakouts: list[dict], top_ks: list[int]) 
     metrics["first hit rank"] = str(first_hit or "none")
 
     # Split by candidate source. 'subtopic' candidates are curated topics NOT derived from the
-    # holdout breakouts — the only non-circular test. 'holdout_label' candidates ARE read off the
+    # holdout breakouts — the clean default test. 'holdout_label' candidates ARE read off the
     # breakout titles, so they hit almost by construction; reported separately, never as headline.
+    # 'discovered_subtopic' candidates replay the operational winners-first path; they are only
+    # non-circular when the registry was generated before the evaluated holdout window.
     by_source: dict[str, list[dict]] = {}
     for r in rows:  # rows arrive already sorted by opportunity, so sublists keep rank order
         by_source.setdefault(r.get("candidate_source") or "unknown", []).append(r)
     metrics["clean source"] = (
         "subtopic" if "subtopic" in by_source
+        else "temporal_discovered_subtopic" if "temporal_discovered_subtopic" in by_source
         else "(none — re-run with --candidate-source subtopics for a non-circular score)"
     )
     if "holdout_label" in by_source:
         metrics["holdout_label note"] = "circular by construction (labels read off the breakouts)"
+    if "discovered_subtopic" in by_source:
+        metrics["discovered_subtopic note"] = (
+            "operational replay; clean only if the registry predates this holdout"
+        )
+    if "temporal_discovered_subtopic" in by_source:
+        metrics["temporal_discovered_subtopic note"] = (
+            "clean winners-first replay: seed topics mined from a pre-holdout window"
+        )
 
     for k in top_ks:
         p, r = _precision_recall_at_k(rows, total_breakouts, k)
@@ -402,6 +452,10 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
             # Clean (non-circular) headline = subtopic candidates only.
             "avg_subtopic_p@5": avg_metric("subtopic precision@5"),
             "avg_subtopic_r@5": avg_metric("subtopic recall@5"),
+            "avg_discovered_subtopic_p@5": avg_metric("discovered_subtopic precision@5"),
+            "avg_discovered_subtopic_r@5": avg_metric("discovered_subtopic recall@5"),
+            "avg_temporal_discovered_subtopic_p@5": avg_metric("temporal_discovered_subtopic precision@5"),
+            "avg_temporal_discovered_subtopic_r@5": avg_metric("temporal_discovered_subtopic recall@5"),
             "avg_precision@5": avg_metric("precision@5"),
             "avg_recall@5": avg_metric("breakout recall@5"),
             "avg_precision@10": avg_metric("precision@10"),
@@ -416,6 +470,8 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
     fields = [
         "domain", "runs", "avg_first_hit_rank", "hit_run_rate",
         "avg_subtopic_p@5", "avg_subtopic_r@5",
+        "avg_discovered_subtopic_p@5", "avg_discovered_subtopic_r@5",
+        "avg_temporal_discovered_subtopic_p@5", "avg_temporal_discovered_subtopic_r@5",
         "avg_precision@5", "avg_recall@5", "avg_precision@10", "avg_recall@10",
     ]
     with csv_path.open("w", newline="") as f:
@@ -428,16 +484,20 @@ def aggregate_registry(path: Path, out_dir: str) -> tuple[Path, Path]:
         f"_Generated {stamp} from `{path}`._",
         "",
         "`subtopic P@5 / R@5` are the **clean, non-circular** numbers (curated topics, not "
-        "labels read off the breakouts). The mixed `P@5 / R@5` columns include circular "
-        "holdout-label candidates and read higher — treat them as a ceiling, not the score.",
+        "labels read off the breakouts). `discovered P@5 / R@5` replay winners-first seeds and "
+        "are clean only when those seeds predate the holdout. `temporal P@5 / R@5` mines those "
+        "seeds from a pre-holdout window inside the run. The mixed `P@5 / R@5` columns include "
+        "circular holdout-label candidates and read higher — treat them as a ceiling, not the score.",
         "",
-        "| Domain | Runs | Hit Run Rate | Avg First Hit | subtopic P@5 | subtopic R@5 | P@5 | R@5 | P@10 | R@10 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Domain | Runs | Hit Run Rate | Avg First Hit | subtopic P@5 | subtopic R@5 | discovered P@5 | discovered R@5 | temporal P@5 | temporal R@5 | P@5 | R@5 | P@10 | R@10 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in summary_rows:
         lines.append(
             f"| {r['domain']} | {r['runs']} | {r['hit_run_rate']} | {r['avg_first_hit_rank']} | "
             f"{r['avg_subtopic_p@5']} | {r['avg_subtopic_r@5']} | "
+            f"{r['avg_discovered_subtopic_p@5']} | {r['avg_discovered_subtopic_r@5']} | "
+            f"{r['avg_temporal_discovered_subtopic_p@5']} | {r['avg_temporal_discovered_subtopic_r@5']} | "
             f"{r['avg_precision@5']} | {r['avg_recall@5']} | {r['avg_precision@10']} | {r['avg_recall@10']} |"
         )
     md_path.write_text("\n".join(lines))
@@ -457,7 +517,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-registry", action="store_true", help="do not append this run to the registry")
     p.add_argument("--holdout-days", type=int, default=180, help="holdout window length (default 180)")
     p.add_argument("--cutoff", default=None, help="holdout start date YYYY-MM-DD (default: today - holdout-days)")
-    p.add_argument("--candidate-source", choices=["subtopics", "labels", "both"], default="both")
+    p.add_argument(
+        "--candidate-source",
+        choices=["subtopics", "labels", "both", "effective", "temporal"],
+        default="both",
+    )
+    p.add_argument("--subtopics-registry", default=None,
+                   help="optional discovered-subtopics registry for --candidate-source effective")
+    p.add_argument("--seed-window-days", type=int, default=180,
+                   help="for --candidate-source temporal: days before holdout used to mine winners-first seeds")
+    p.add_argument("--seed-gap-days", type=int, default=0,
+                   help="for --candidate-source temporal: gap between seed window and holdout start")
     p.add_argument("--max-candidates", type=int, default=25)
     p.add_argument("--max-labels", type=int, default=12)
     p.add_argument("--top-k", default="5,10", help="comma-separated k values for precision/recall")
@@ -468,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--with-llm", action="store_true", help="use LLM for holdout labels and quality scoring")
     p.add_argument("--with-trends", action="store_true", help="include current Trends signal")
     p.add_argument("--with-comments", action="store_true", help="include current comment-demand signal")
-    p.add_argument("--llm-provider", choices=["auto", "anthropic", "codex", "claude", "agy"], default=None)
+    p.add_argument("--llm-provider", choices=LLM_PROVIDERS, default=None)
     p.add_argument("--cache-only", action="store_true", help="only use cached YouTube responses; never call the API")
     p.add_argument("--out-dir", default=None)
     p.add_argument("--region-code", default=None)
@@ -543,7 +613,33 @@ def main(argv=None) -> int:
         return 1
 
     labels = labels_from_breakouts(breakouts, llm, args.max_labels)
-    candidates = candidate_topics(domain, labels, args.candidate_source, args.max_candidates)
+    temporal_meta: dict[str, str] = {}
+    if args.candidate_source == "temporal":
+        seed_end = holdout_start - dt.timedelta(days=max(args.seed_gap_days, 0))
+        seed_start = seed_end - dt.timedelta(days=max(args.seed_window_days, 1))
+        print(f"Temporal seed window: {seed_start.date()} to {seed_end.date()}")
+        seed_breakouts = mine_holdout_breakouts(
+            client, cfg, domain, seed_start, seed_end, min_vpd, max_per_term
+        )
+        if not seed_breakouts:
+            print("No pre-holdout seed breakouts found for temporal discovered candidates.")
+            return 1
+        candidates = discovered_candidates_from_breakouts(
+            seed_breakouts, llm, args.max_candidates
+        )
+        temporal_meta = {
+            "temporal seed window": f"{seed_start.date().isoformat()} to {seed_end.date().isoformat()}",
+            "temporal seed breakouts": str(len(seed_breakouts)),
+            "temporal seed candidates": str(len(candidates)),
+        }
+    else:
+        candidates = candidate_topics(
+            domain,
+            labels,
+            args.candidate_source,
+            args.max_candidates,
+            subtopics_registry=args.subtopics_registry,
+        )
     if not candidates:
         print("No candidates to score.")
         return 1
@@ -582,6 +678,7 @@ def main(argv=None) -> int:
     rows.sort(key=lambda r: (r.get("opportunity") or 0.0), reverse=True)
     top_ks = [int(x) for x in args.top_k.split(",") if x.strip().isdigit()]
     metrics = compute_metrics(rows, breakouts, top_ks or [5, 10])
+    metrics.update(temporal_meta)
     csv_path, md_path = write_backtest_report(
         rows, breakouts, metrics, cfg.out_dir, domain.name, holdout_start, holdout_end
     )

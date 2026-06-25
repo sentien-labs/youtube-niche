@@ -118,7 +118,7 @@ class Config:
 
     # --- LLM provider for signals E, G ---
     # 'auto' = anthropic SDK if ANTHROPIC_API_KEY set, else the codex CLI.
-    # Or force: 'anthropic' | 'codex' | 'claude' | 'agy' (CLIs use their own auth).
+    # Or force: 'anthropic' | 'codex' | 'claude' | 'agy' | 'grok' (CLIs use their own auth).
     llm_provider: str = "auto"
     codex_bin: str = "codex"
     # Models used only by the anthropic SDK backend:

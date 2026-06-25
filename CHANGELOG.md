@@ -5,8 +5,8 @@
 ### Added
 
 - **Winners-first → stage-2 loop**: `winners --emit-subtopics` writes breakout-derived niches to
-  `discovered_subtopics.json`; `--from-domain` now prefers these data-derived seeds over the
-  hand-curated list (falls back to curated, reports `source:`).
+  a writable user registry; `--from-domain` reads shipped discovered seeds plus that user overlay
+  before falling back to the hand-curated list (reports `source:`).
 - **Community calibration**: `youtube_niche.community calibrate` pools resolved forward-test
   snapshots into a score-vs-reality AUC curve; `validate` checks contributions. See `community/`.
 - **Forward-test `resolve`**: closes the forward loop by checking due snapshots against real
@@ -14,12 +14,23 @@
 - **Keyless fixtures**: `backtest --fixtures` runs the full pipeline with no API key or quota.
 - **Backtest precision split by candidate source** (`subtopic` = clean/non-circular vs
   `holdout_label` = circular), surfaced in the aggregate.
+- **Backtest `--candidate-source effective`**: replays the actual `--from-domain` seed source
+  (discovered registry when present, curated fallback) and reports discovered-subtopic metrics
+  separately from the clean curated baseline.
+- **Backtest `--candidate-source temporal`**: mines winners-first seed topics from a pre-holdout
+  window, freezes those candidates, scores with pre-holdout searches, and tests against the later
+  holdout.
+- **Grok CLI LLM backend**: `--llm-provider grok` / `LLM_PROVIDER=grok` can use an already
+  authenticated `grok` CLI for niche extraction, comment-demand, and quality-depth signals.
+- **Shared relevance normalization**: live supply scoring and backtest matching now share simple
+  normalization for plural/singular, local/locally, cancel spelling, and retire/retiring matches.
 
 ### Validation
 
 - First clean (`--candidate-source subtopics`) backtest across finance/AI/business returned ~0%
-  precision: curated subtopic lists do not match real breakouts (confirmed uncapped, offline). This
-  motivated the winners-first → stage-2 loop above.
+  precision in the sampled holdout: curated subtopic lists did not match the observed breakouts.
+  This motivated the winners-first → stage-2 loop above; prospective forward tests are still the
+  evidence needed before claiming predictive lift.
 
 ## v0.1.0-public-beta
 

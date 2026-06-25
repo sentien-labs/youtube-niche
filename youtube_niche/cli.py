@@ -20,7 +20,7 @@ from .demo import demo_rows
 from .enrich import enrich
 from .external import match_external_metric
 from .forward import capture_score_snapshot, parse_horizons
-from .llm import make_llm
+from .llm import LLM_PROVIDERS, make_llm
 from .monetization import monetization_score
 from .report import write_reports
 from .score import confidence_score, opportunity_score
@@ -411,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-llm", action="store_true", help="skip comment + quality LLM signals")
     p.add_argument(
         "--llm-provider",
-        choices=["auto", "anthropic", "codex", "claude", "agy"],
+        choices=LLM_PROVIDERS,
         default=None,
         help="LLM backend for signals E & G (default: auto = anthropic key if set, else codex)",
     )

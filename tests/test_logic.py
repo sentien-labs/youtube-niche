@@ -708,18 +708,28 @@ def test_calibrate_percentile():
 
 
 def test_backtest_topic_matching_and_labels():
+    from pathlib import Path
+
     from youtube_niche.backtest import (
         candidate_topics,
+        discovered_candidates_from_breakouts,
         matched_breakouts,
         simple_label_from_title,
         text_matches_topic,
     )
+    from youtube_niche.subtopics import save_discovered
 
     title = "Want to Run AI Agents Locally? Here is The Bare Minimum Setup/Build"
     assert simple_label_from_title(title) == "run ai agents locally"
     assert text_matches_topic(title, "run ai agents locally")
+    assert text_matches_topic(title, "local ai agent setup")
     assert not text_matches_topic(title, "backdoor roth ira")
     assert not text_matches_topic(title, "ai automation for real estate agents")
+    assert text_matches_topic(
+        "Why Tech CEOs Are Quietly Cancelling Their AI Plans",
+        "tech companies canceling ai",
+    )
+    assert text_matches_topic("I Retired Broke... And This Is What It Feels Like", "retiring broke")
 
     breakouts = [
         {"video_id": "a", "title": title},
@@ -732,6 +742,20 @@ def test_backtest_topic_matching_and_labels():
     assert candidate_topics(domain, ["run ai agents locally"], "both", 1) == [
         ("run ai agents locally", "holdout_label")
     ]
+    assert candidate_topics(domain, [], "effective", 10) == [
+        ("generic ai tools", "subtopic")
+    ]
+
+    with tempfile.TemporaryDirectory() as d:
+        reg = Path(d) / "reg.json"
+        save_discovered("AI", ["run ai agents locally"], path=reg)
+        assert candidate_topics(domain, [], "effective", 10, subtopics_registry=reg) == [
+            ("run ai agents locally", "discovered_subtopic")
+        ]
+    temporal_candidates = discovered_candidates_from_breakouts(
+        [{"title": title}], llm=None, max_candidates=5
+    )
+    assert temporal_candidates == [("run ai agents locally", "temporal_discovered_subtopic")]
 
 
 def test_backtest_registry_aggregate_report():
@@ -849,14 +873,27 @@ def test_backtest_metrics_split_by_source():
         {"candidate_source": "subtopic", "backtest_hit": True, "hit_video_ids": ["b2"]},
         {"candidate_source": "holdout_label", "backtest_hit": True, "hit_video_ids": ["b3"]},
         {"candidate_source": "subtopic", "backtest_hit": False, "hit_video_ids": []},
+        {"candidate_source": "discovered_subtopic", "backtest_hit": True, "hit_video_ids": ["b1"]},
+        {"candidate_source": "temporal_discovered_subtopic", "backtest_hit": True, "hit_video_ids": ["b4"]},
     ]
     m = compute_metrics(rows, breakouts, [5])
     assert m["clean source"] == "subtopic"
     assert "holdout_label note" in m  # flagged as circular
+    assert "discovered_subtopic note" in m  # flagged unless generated before holdout
+    assert "temporal_discovered_subtopic note" in m
     # holdout labels hit 2/2; subtopics hit 1/2 — the honest, lower number
     assert m["holdout_label precision@5"] == "1.00"
     assert m["subtopic precision@5"] == "0.50"
-    assert m["precision@5"] == "0.75"  # mixed overall
+    assert m["discovered_subtopic precision@5"] == "1.00"
+    assert m["temporal_discovered_subtopic precision@5"] == "1.00"
+    assert m["precision@5"] == "0.80"  # mixed overall
+
+    temporal_only = compute_metrics(
+        [{"candidate_source": "temporal_discovered_subtopic", "backtest_hit": True, "hit_video_ids": ["b1"]}],
+        breakouts,
+        [5],
+    )
+    assert temporal_only["clean source"] == "temporal_discovered_subtopic"
 
 
 def test_resolve_due_snapshots_marks_hit_and_miss():
@@ -1018,11 +1055,59 @@ def test_discovered_subtopics_registry_and_fallback():
         assert effective_subtopics(other, path) == (["x"], "curated")
 
 
+def test_default_discovered_registry_uses_writable_user_overlay():
+    import os
+    from pathlib import Path
+
+    from youtube_niche.subtopics import (
+        ENV_REGISTRY,
+        default_user_registry,
+        discovered_subtopics,
+        save_discovered,
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "reg.json"
+        old = os.environ.get(ENV_REGISTRY)
+        os.environ[ENV_REGISTRY] = str(path)
+        try:
+            assert default_user_registry() == path
+            written = save_discovered("User Domain", ["fresh breakout niche"])
+            assert written == path
+            assert discovered_subtopics("User Domain") == ["fresh breakout niche"]
+        finally:
+            if old is None:
+                os.environ.pop(ENV_REGISTRY, None)
+            else:
+                os.environ[ENV_REGISTRY] = old
+
+
 def test_winners_emit_subtopics_flag_parses():
     from youtube_niche.winners import build_parser
 
     args = build_parser().parse_args(["--domain", "personal finance", "--emit-subtopics"])
     assert args.emit_subtopics is True
+
+
+def test_grok_llm_provider_is_wired_without_requiring_login():
+    from youtube_niche.backtest import build_parser as build_backtest_parser
+    from youtube_niche.cli import build_parser as build_cli_parser
+    from youtube_niche.llm import GrokCliBackend, LLM_PROVIDERS
+    from youtube_niche.winners import build_parser as build_winners_parser
+
+    assert "grok" in LLM_PROVIDERS
+    assert build_cli_parser().parse_args(["x", "--llm-provider", "grok"]).llm_provider == "grok"
+    assert build_backtest_parser().parse_args(["--fixtures", "--llm-provider", "grok"]).llm_provider == "grok"
+    temporal_args = build_backtest_parser().parse_args([
+        "--fixtures", "--candidate-source", "temporal", "--seed-window-days", "90",
+    ])
+    assert temporal_args.candidate_source == "temporal"
+    assert temporal_args.seed_window_days == 90
+    assert build_winners_parser().parse_args(["--domain", "AI", "--llm-provider", "grok"]).llm_provider == "grok"
+
+    backend = GrokCliBackend(bin="definitely-not-a-real-grok-binary")
+    assert backend.name == "grok"
+    assert backend.available is False
 
 
 def test_fixtures_backtest_runs_keyless():

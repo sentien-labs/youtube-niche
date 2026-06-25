@@ -7,14 +7,13 @@ D small_channel   — small channels ranking = beatable supply
 from __future__ import annotations
 
 import datetime as dt
-import re
 from collections import Counter
 from statistics import median
 
+from ..topics import topic_tokens
 from ..util import clamp01, saturating
 
 MIN_DENSITY_SAMPLE = 15
-TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 def _age_days(published_iso: str, now: dt.datetime | None = None) -> float | None:
@@ -35,20 +34,17 @@ def _views_per_day(v: dict, now: dt.datetime | None = None) -> float | None:
 
 
 def _topic_tokens(topic: str | None) -> set[str]:
-    if not topic:
-        return set()
-    stop = {"the", "and", "for", "with", "how", "what", "why", "best", "guide", "tips", "2026"}
-    return {t for t in TOKEN_RE.findall(topic.lower()) if len(t) > 2 and t not in stop}
+    return topic_tokens(topic)
 
 
-def _title_relevant(v: dict, topic_tokens: set[str]) -> bool:
-    if not topic_tokens:
+def _title_relevant(v: dict, required_tokens: set[str]) -> bool:
+    if not required_tokens:
         return True
-    title_tokens = set(TOKEN_RE.findall(str(v.get("title", "")).lower()))
+    title_tokens = topic_tokens(str(v.get("title", "")))
     if not title_tokens:
         return False
-    overlap = len(topic_tokens & title_tokens)
-    return overlap >= max(1, min(2, len(topic_tokens)))
+    overlap = len(required_tokens & title_tokens)
+    return overlap >= max(1, min(2, len(required_tokens)))
 
 
 def filter_relevant_videos(videos: list[dict], topic: str | None) -> list[dict]:

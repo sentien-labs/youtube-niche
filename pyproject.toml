@@ -45,6 +45,9 @@ Roadmap = "https://github.com/sentien-labs/youtube-niche/blob/main/docs/ROADMAP.
 [tool.setuptools.packages.find]
 include = ["youtube_niche*"]
 
+[tool.setuptools.package-data]
+youtube_niche = ["discovered_subtopics.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

@@ -106,6 +106,11 @@ Use `--query-samples 3` for more robust scoring. The scorer evaluates several qu
 uses median signal values across relevant samples, and lowers confidence when query coverage or
 agreement is weak.
 
+Confidence is evidence coverage, not a calibrated win probability. Backtests default to disabling
+Trends, comments, and LLM depth scoring to reduce leakage, so their confidence scores are expected
+to be capped lower. For live research, use `--query-samples 3` plus an authenticated LLM provider
+such as `--llm-provider grok` when you want the fuller evidence stack.
+
 ## Setup For Live Runs
 
 ```bash
@@ -124,7 +129,7 @@ cp .env.example .env   # then fill in your keys
 YOUTUBE_API_KEY=...
 
 # LLM for signals E (comments) and G (depth). 'auto' uses the anthropic SDK if a key is
-# set, else the codex CLI. Or pick: codex | claude | agy (CLIs use their own auth) | anthropic.
+# set, else the codex CLI. Or pick: codex | claude | agy | grok (CLIs use their own auth) | anthropic.
 LLM_PROVIDER=codex
 # ANTHROPIC_API_KEY=...   # only if LLM_PROVIDER=anthropic
 
@@ -146,6 +151,7 @@ already-authenticated CLI:
 | `codex` | `codex exec` | OpenAI; clean output via `-o`. **Verified working.** |
 | `claude` | `claude -p` | Anthropic CLI (needs the CLI logged in) |
 | `agy` | `agy -p` | Google/Gemini CLI (needs `agy` signed in) |
+| `grok` | `grok -p` | xAI/Grok CLI (needs `grok` signed in) |
 | `anthropic` | SDK | needs `ANTHROPIC_API_KEY` |
 
 Pick with `--llm-provider` or `LLM_PROVIDER`. `auto` = anthropic key if present, else codex.
@@ -172,6 +178,8 @@ python -m youtube_niche.winners --domain "personal finance" --emit-subtopics
 
 # Backtest — check whether high-ranked candidates match later small-channel breakouts
 python -m youtube_niche.backtest --domain "AI" --query-samples 2 --max-candidates 10
+python -m youtube_niche.backtest --domain "AI" --candidate-source effective   # replay --from-domain seeds
+python -m youtube_niche.backtest --domain "AI" --candidate-source temporal --cutoff 2026-01-01
 python -m youtube_niche.backtest --aggregate
 
 # Forward-test — save today's scored topics for 30/60/90-day follow-up
@@ -182,13 +190,13 @@ python -m youtube_niche.forward summary
 The domain list and its (industry-estimate) CPM ranges live in `youtube_niche/domains.py` —
 edit freely. CPM is *not* available from the YouTube API; the registry is the curated input.
 
-**Discovered subtopics beat curated ones.** Backtesting showed the hand-curated `domain.subtopics`
-miss where breakouts actually happen (curated lists scored ~0% precision against real small-channel
-breakouts — they skew toward niche minutiae while demand concentrates on broader themes).
+**Winners-first reduces reliance on guessed subtopics.** The first clean backtests showed the
+hand-curated `domain.subtopics` missing this holdout's real small-channel breakouts, often because
+the curated lists skew toward niche minutiae while demand concentrates on broader themes.
 `winners --emit-subtopics` closes the loop: it mines real breakouts, reads the niches off them, and
-records them in `youtube_niche/discovered_subtopics.json`. `--from-domain` then seeds stage-2 from
-those data-derived niches (printing `source: discovered`), falling back to the curated list for any
-domain not yet mined (`source: curated`).
+records them in a writable user registry. `--from-domain` reads the shipped seed registry plus that
+user overlay, then seeds stage 2 from data-derived niches (printing `source: discovered`) and falls
+back to the curated list for any domain not yet mined (`source: curated`).
 
 Useful flags:
 
@@ -227,9 +235,14 @@ Backtest runs append to `out/backtest-runs.csv`; use `python -m youtube_niche.ba
 to generate a cross-run validation summary.
 
 **Read the `subtopic` numbers, not the headline.** Metrics are split by candidate source.
-`subtopic` candidates are curated topics *not* derived from the holdout breakouts — the only
-non-circular score. `holdout_label` candidates are read off the breakout titles, so they hit
-almost by construction and are flagged circular. For an honest run, use
+`subtopic` candidates are curated topics *not* derived from the holdout breakouts — the clean
+baseline. `holdout_label` candidates are read off the breakout titles, so they hit almost by
+construction and are flagged circular. `--candidate-source effective` replays the actual
+`--from-domain` seed source, including discovered subtopics when present; treat that as clean only
+when the discovered registry was generated before the tested holdout window.
+`--candidate-source temporal` is the clean winners-first experiment: it mines breakout-derived seed
+topics from a window before the holdout, freezes that list for the run, scores with pre-holdout
+searches, and tests against the later holdout. For the conservative curated baseline, use
 `--candidate-source subtopics`.
 
 **No API key? Try it keyless.** `python -m youtube_niche.backtest --fixtures` runs the whole

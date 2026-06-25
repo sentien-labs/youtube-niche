@@ -10,18 +10,32 @@ STOPWORDS = {
     "the", "a", "an", "and", "or", "to", "of", "for", "in", "on", "with", "without",
     "how", "what", "why", "when", "where", "best", "top", "guide", "tips", "tutorial",
     "explained", "complete", "ultimate", "beginner", "beginners", "review", "reviews",
-    "vs", "versus", "2024", "2025", "2026",
+    "vs", "versus", "your", "you", "is", "are", "this", "that", "my", "video", "videos",
+    "want", "here", "bare", "minimum", "setup", "build", "quietly",
+    "2024", "2025", "2026",
+}
+
+TOKEN_NORMALIZATIONS = {
+    "canceled": "cancel",
+    "cancelled": "cancel",
+    "canceling": "cancel",
+    "cancelling": "cancel",
+    "locally": "local",
+    "retired": "retire",
+    "retiring": "retire",
 }
 
 
-def _stem_token(token: str) -> str:
+def normalize_token(token: str) -> str:
+    """Small, explainable normalization for topic/relevance matching."""
+    token = TOKEN_NORMALIZATIONS.get(token, token)
     if len(token) > 4 and token.endswith("ies"):
         return token[:-3] + "y"
-    if len(token) > 4 and token.endswith("es"):
+    if len(token) > 4 and token.endswith("es") and not token.endswith(("ses", "xes")):
         return token[:-2]
-    if len(token) > 3 and token.endswith("s"):
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
         return token[:-1]
-    return token
+    return TOKEN_NORMALIZATIONS.get(token, token)
 
 
 def topic_tokens(text: str | None) -> set[str]:
@@ -29,7 +43,7 @@ def topic_tokens(text: str | None) -> set[str]:
     if not text:
         return set()
     return {
-        _stem_token(t)
+        normalize_token(t)
         for t in TOKEN_RE.findall(text.lower())
         if len(t) > 1 and t not in STOPWORDS
     }

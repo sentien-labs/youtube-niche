@@ -1,26 +1,31 @@
 """Discovered-subtopics registry — winners-first niches written back as the stage-2 seed list.
 
-The hand-curated `domain.subtopics` were shown by the backtest to miss where breakouts actually
-happen (curated lists scored ~0% precision against real small-channel breakouts). This closes the
-loop: `python -m youtube_niche.winners --domain X --emit-subtopics` mines real breakouts, reads the
-niches off them, and records them here; `--from-domain X` then seeds stage-2 from these data-derived
-niches instead of the hand-guessed list, falling back to the curated list when none are recorded yet.
+The first clean backtests showed hand-curated `domain.subtopics` missing observed small-channel
+breakouts. This closes the loop: `python -m youtube_niche.winners --domain X --emit-subtopics`
+mines real breakouts, reads the niches off them, and records them; `--from-domain X` then seeds
+stage-2 from these data-derived niches instead of the hand-guessed list, falling back to the
+curated list when none are recorded yet.
 """
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-# Ships inside the package so regenerated lists are versioned with the tool.
-DEFAULT_REGISTRY = Path(__file__).with_name("discovered_subtopics.json")
+ENV_REGISTRY = "YOUTUBE_NICHE_SUBTOPICS_PATH"
+PACKAGE_REGISTRY = Path(__file__).with_name("discovered_subtopics.json")
 
 
-def _path(path: str | Path | None) -> Path:
-    return Path(path) if path else DEFAULT_REGISTRY
+def default_user_registry() -> Path:
+    """Writable overlay for regenerated discovered subtopics."""
+    if os.environ.get(ENV_REGISTRY):
+        return Path(os.environ[ENV_REGISTRY]).expanduser()
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg_config).expanduser() if xdg_config else Path.home() / ".config"
+    return base / "youtube-niche" / "discovered_subtopics.json"
 
 
-def load_registry(path: str | Path | None = None) -> dict:
-    p = _path(path)
+def _read_registry(p: Path) -> dict:
     if not p.exists():
         return {}
     try:
@@ -28,6 +33,18 @@ def load_registry(path: str | Path | None = None) -> dict:
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _path(path: str | Path | None) -> Path:
+    return Path(path).expanduser() if path else default_user_registry()
+
+
+def load_registry(path: str | Path | None = None) -> dict:
+    if path is not None:
+        return _read_registry(_path(path))
+    packaged = _read_registry(PACKAGE_REGISTRY)
+    user = _read_registry(default_user_registry())
+    return {**packaged, **user}
 
 
 def discovered_subtopics(domain_name: str, path: str | Path | None = None) -> list[str]:

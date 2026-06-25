@@ -21,7 +21,7 @@ from .config import Config
 from .domains import DOMAINS
 from .enrich import enrich
 from .forward import capture_score_snapshot, parse_horizons
-from .llm import make_llm
+from .llm import LLM_PROVIDERS, make_llm
 from .report import write_reports
 from .signals.volume import views_per_day
 from .topics import dedupe_ranked_rows, dedupe_topics
@@ -147,8 +147,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-niches", type=int, default=15, help="how many discovered niches to score")
     p.add_argument("--emit-subtopics", action="store_true",
                    help="write discovered niches to the subtopics registry (seeds --from-domain) and skip scoring")
-    p.add_argument("--emit-out", default=None, help="registry path (default: packaged discovered_subtopics.json)")
-    p.add_argument("--llm-provider", choices=["auto", "anthropic", "codex", "claude", "agy"], default=None)
+    p.add_argument("--emit-out", default=None,
+                   help="registry path (default: user config overlay; packaged seeds are read-only fallback)")
+    p.add_argument("--llm-provider", choices=LLM_PROVIDERS, default=None)
     p.add_argument("--no-llm", action="store_true", help="skip LLM (keyword niche extraction + no depth)")
     p.add_argument("--no-trends", action="store_true")
     p.add_argument("--top-n", type=int, default=None)

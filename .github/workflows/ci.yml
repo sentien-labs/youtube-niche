@@ -21,3 +21,13 @@ jobs:
           pip install -r requirements.txt
       - name: Run tests
         run: python -m pytest -q
+      - name: Keyless smoke (demo report + fixtures backtest, no API key)
+        run: |
+          python -m youtube_niche --demo --out-dir /tmp/ci-out
+          python -m youtube_niche.backtest --fixtures --candidate-source subtopics --no-registry --out-dir /tmp/ci-out
+      - name: Validate community submissions
+        run: |
+          python -m youtube_niche.community validate community/examples/*.csv
+          shopt -s nullglob
+          files=(community/*.csv)
+          if [ ${#files[@]} -gt 0 ]; then python -m youtube_niche.community validate "${files[@]}"; fi

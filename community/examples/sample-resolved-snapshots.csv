@@ -1,0 +1,7 @@
+snapshot_id,created_at,due_at,horizon_days,label,source,rank,topic,opportunity,opportunity_raw,confidence,demand,supply_gap,cpm_score,relevance_gate,query_samples,status,checked_at,breakout_count,notes
+20260101-090000-personal-finance,2026-01-01T09:00:00+00:00,2026-04-01,90,personal finance,youtube_niche,1,rent vs buy a house,0.62,0.78,0.80,0.73,0.74,0.82,1.0,3,checked,2026-04-02,2,hit: Rent vs Buy a House in 2026 | Rent vs Buy: Why I Changed My Mind
+20260101-090000-personal-finance,2026-01-01T09:00:00+00:00,2026-04-01,90,personal finance,youtube_niche,2,dividend growth investing,0.55,0.71,0.78,0.69,0.70,0.82,1.0,3,checked,2026-04-02,1,hit: My Dividend Growth Portfolio Update
+20260101-090000-personal-finance,2026-01-01T09:00:00+00:00,2026-04-01,90,personal finance,youtube_niche,3,underconsumption habits,0.48,0.64,0.62,0.66,0.61,0.55,1.0,3,checked,2026-04-02,1,hit: Underconsumption Core: How I Save 60%
+20260101-090000-personal-finance,2026-01-01T09:00:00+00:00,2026-04-01,90,personal finance,youtube_niche,4,hsa investing,0.33,0.55,0.59,0.58,0.55,0.74,0.67,3,checked,2026-04-02,0,miss
+20260101-090000-personal-finance,2026-01-01T09:00:00+00:00,2026-04-01,90,personal finance,youtube_niche,5,i bonds explained,0.21,0.40,0.55,0.42,0.50,0.74,0.67,3,checked,2026-04-02,0,miss
+20260101-090000-personal-finance,2026-01-01T09:00:00+00:00,2026-04-01,90,personal finance,youtube_niche,6,annuities explained,0.14,0.31,0.50,0.30,0.45,0.74,0.50,3,checked,2026-04-02,0,miss

@@ -1110,6 +1110,39 @@ def test_grok_llm_provider_is_wired_without_requiring_login():
     assert backend.available is False
 
 
+def test_grok_model_env_and_tier_overrides_are_wired_without_requiring_login():
+    import os
+
+    from youtube_niche.config import Config
+    from youtube_niche.llm import make_llm
+
+    keys = ["GROK_MODEL", "GROK_COMMENT_MODEL", "GROK_QUALITY_MODEL", "LLM_PROVIDER"]
+    old = {key: os.environ.get(key) for key in keys}
+    try:
+        os.environ["LLM_PROVIDER"] = "grok"
+        os.environ["GROK_MODEL"] = "grok-composer-2.5-fast"
+        os.environ["GROK_QUALITY_MODEL"] = "grok-build"
+        os.environ.pop("GROK_COMMENT_MODEL", None)
+
+        cfg = Config.from_env()
+        assert cfg.llm_provider == "grok"
+        assert cfg.grok_model == "grok-composer-2.5-fast"
+        assert cfg.grok_quality_model == "grok-build"
+
+        llm = make_llm(cfg)
+        assert llm.backend.name == "grok"
+        assert llm.backend.models == {
+            "cheap": "grok-composer-2.5-fast",
+            "quality": "grok-build",
+        }
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def test_fixtures_backtest_runs_keyless():
     from youtube_niche.backtest import main as backtest_main
 

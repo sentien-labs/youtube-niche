@@ -121,6 +121,10 @@ class Config:
     # Or force: 'anthropic' | 'codex' | 'claude' | 'agy' | 'grok' (CLIs use their own auth).
     llm_provider: str = "auto"
     codex_bin: str = "codex"
+    # Grok CLI model selection. GROK_MODEL applies to both tiers; tier-specific vars override it.
+    grok_model: str | None = None
+    grok_comment_model: str | None = None
+    grok_quality_model: str | None = None
     # Models used only by the anthropic SDK backend:
     llm_comment_model: str = "claude-haiku-4-5-20251001"
     llm_quality_model: str = "claude-sonnet-4-6"
@@ -151,6 +155,9 @@ class Config:
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         )
         cfg.llm_provider = os.environ.get("LLM_PROVIDER", cfg.llm_provider)
+        cfg.grok_model = os.environ.get("GROK_MODEL", cfg.grok_model)
+        cfg.grok_comment_model = os.environ.get("GROK_COMMENT_MODEL", cfg.grok_comment_model)
+        cfg.grok_quality_model = os.environ.get("GROK_QUALITY_MODEL", cfg.grok_quality_model)
         cfg.daily_search_limit = _env_int("YOUTUBE_DAILY_SEARCH_LIMIT", cfg.daily_search_limit)
         cfg.region_code = os.environ.get("YOUTUBE_REGION_CODE", cfg.region_code)
         cfg.relevance_language = os.environ.get("YOUTUBE_RELEVANCE_LANGUAGE", cfg.relevance_language)

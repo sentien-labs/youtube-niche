@@ -22,6 +22,8 @@
   holdout.
 - **Grok CLI LLM backend**: `--llm-provider grok` / `LLM_PROVIDER=grok` can use an already
   authenticated `grok` CLI for niche extraction, comment-demand, and quality-depth signals.
+- **Grok model pinning**: `GROK_MODEL` pins the Grok CLI model for repeatable runs, with
+  `GROK_COMMENT_MODEL` / `GROK_QUALITY_MODEL` available for tier-specific A/B tests.
 - **Shared relevance normalization**: live supply scoring and backtest matching now share simple
   normalization for plural/singular, local/locally, cancel spelling, and retire/retiring matches.
 

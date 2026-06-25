@@ -265,6 +265,12 @@ def make_llm(cfg) -> LLM:
     """Build an LLM from cfg.llm_provider."""
     provider = (getattr(cfg, "llm_provider", "auto") or "auto").lower()
 
+    grok_default_model = getattr(cfg, "grok_model", None)
+    grok_models = {
+        "cheap": getattr(cfg, "grok_comment_model", None) or grok_default_model,
+        "quality": getattr(cfg, "grok_quality_model", None) or grok_default_model,
+    }
+
     builders = {
         "anthropic": lambda: AnthropicBackend(
             cfg.anthropic_api_key, cfg.llm_comment_model, cfg.llm_quality_model
@@ -274,7 +280,7 @@ def make_llm(cfg) -> LLM:
         "agy": lambda: AgyCliBackend(
             models={"cheap": "Gemini 3.5 Flash (Low)", "quality": "Gemini 3.1 Pro (Low)"}
         ),
-        "grok": lambda: GrokCliBackend(),
+        "grok": lambda: GrokCliBackend(models={k: v for k, v in grok_models.items() if v}),
     }
 
     if provider != "auto" and provider not in builders:

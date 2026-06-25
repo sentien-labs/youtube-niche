@@ -131,6 +131,9 @@ YOUTUBE_API_KEY=...
 # LLM for signals E (comments) and G (depth). 'auto' uses the anthropic SDK if a key is
 # set, else the codex CLI. Or pick: codex | claude | agy | grok (CLIs use their own auth) | anthropic.
 LLM_PROVIDER=codex
+# Optional when LLM_PROVIDER=grok. GROK_MODEL applies to both tiers; tier overrides win.
+# GROK_MODEL=grok-composer-2.5-fast
+# GROK_QUALITY_MODEL=grok-build
 # ANTHROPIC_API_KEY=...   # only if LLM_PROVIDER=anthropic
 
 # Optional locale/quota tuning
@@ -155,6 +158,9 @@ already-authenticated CLI:
 | `anthropic` | SDK | needs `ANTHROPIC_API_KEY` |
 
 Pick with `--llm-provider` or `LLM_PROVIDER`. `auto` = anthropic key if present, else codex.
+For Grok, set `GROK_MODEL` to pin the CLI model instead of relying on the local default. The
+lightweight default to test first is `grok-composer-2.5-fast`; `grok-build` is worth comparing on
+the quality/niche-extraction tier via `GROK_QUALITY_MODEL`.
 Note: CLI backends spawn one subprocess per call (~5–20s each), so a large run with depth
 scoring takes a while — keep `--max-seeds` modest while tuning.
 

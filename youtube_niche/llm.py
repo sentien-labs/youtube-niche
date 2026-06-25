@@ -9,6 +9,10 @@ Backends:
 
 Every backend exposes `complete_json(system, user, tier)` and returns parsed JSON or None.
 The whole thing degrades gracefully: no working backend -> LLM.enabled is False -> signals skip.
+
+Important boundary: the Grok CLI backend is only an LLM/reasoning backend. It does not provide
+native X/Twitter data or xAI's API `x_search` tool. If X momentum becomes a scoring signal, keep it
+as a separate API-backed signal module rather than routing it through this generic LLM layer.
 """
 from __future__ import annotations
 

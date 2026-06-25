@@ -96,6 +96,10 @@ Good first contributions include:
 | I | **Relevance gate** | title match | caps demand when search results do not clearly match the niche |
 | J | **Confidence** | signal coverage | how complete the evidence is |
 
+There is intentionally no X/Twitter signal today. `LLM_PROVIDER=grok` uses the local Grok CLI as
+an LLM for reasoning/extraction only; native X data would require a separate xAI API `x_search`
+integration and should be validated as its own demand signal.
+
 `opportunity = confidence × demand_gate × geomean(demand, low-supply, monetization, thin-content)`.
 The demand gate includes both view velocity and a relevance gate, so unrelated fuzzy search
 results cannot create a fake "high demand / low supply" opportunity.
@@ -131,6 +135,7 @@ YOUTUBE_API_KEY=...
 # LLM for signals E (comments) and G (depth). 'auto' uses the anthropic SDK if a key is
 # set, else the codex CLI. Or pick: codex | claude | agy | grok (CLIs use their own auth) | anthropic.
 LLM_PROVIDER=codex
+# Note: LLM_PROVIDER=grok is a Grok CLI reasoning backend, not native X/Twitter data access.
 # Optional when LLM_PROVIDER=grok. GROK_MODEL applies to both tiers; tier overrides win.
 # GROK_MODEL=grok-composer-2.5-fast
 # GROK_QUALITY_MODEL=grok-build
@@ -161,6 +166,12 @@ Pick with `--llm-provider` or `LLM_PROVIDER`. `auto` = anthropic key if present,
 For Grok, set `GROK_MODEL` to pin the CLI model instead of relying on the local default. The
 lightweight default to test first is `grok-composer-2.5-fast`; `grok-build` is worth comparing on
 the quality/niche-extraction tier via `GROK_QUALITY_MODEL`.
+
+Grok CLI is not treated as an X-data source. Use it for second-opinion reasoning, niche extraction,
+comment-demand classification, and transcript-depth scoring. If the project adds X momentum later,
+that should live as a separate API-backed signal using xAI `x_search` or another auditable X data
+provider, with its own raw evidence and calibration.
+
 Note: CLI backends spawn one subprocess per call (~5–20s each), so a large run with depth
 scoring takes a while — keep `--max-seeds` modest while tuning.
 
@@ -342,7 +353,7 @@ youtube_niche/
   config.py          keys, quota budget, weights, thresholds
   cache.py           sqlite request cache (saves quota)
   youtube_client.py  quota-aware, cached YouTube Data API wrapper
-  llm.py             Anthropic wrapper (signals E, G); degrades if no key
+  llm.py             pluggable LLM backends for signals E, G; no native X search
   transcript.py      transcript fetch (signal G)
   seeds.py           autocomplete seed expansion
   signals/           A outlier · B,C,D supply · E comments · F trends · G quality · relevance gate

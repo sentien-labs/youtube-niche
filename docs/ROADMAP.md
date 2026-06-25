@@ -19,10 +19,14 @@ making the recommendations harder to fool and easier to validate.
 - Expand cache-only workflows so contributors can reproduce reports from shared fixtures.
 - Improve semantic relevance matching beyond lexical title overlap.
 - Publish aggregate validation results once enough backtest and forward-test runs exist.
+- Design an optional X/Twitter demand signal as a separate API-backed module. Grok CLI can help
+  with LLM reasoning, but native X data should come from xAI `x_search`, X API exports, or another
+  auditable source and must be validated separately.
 
 ## Later
 
 - Optional integrations with paid keyword tools.
+- Optional X momentum/commentary signal if calibration shows it improves forward-hit prediction.
 - Richer per-domain baselines for Trends and view-velocity knees.
 - Lightweight web UI for comparing opportunities and validation runs.
 - Versioned releases on PyPI after the CLI and report schema stabilize.

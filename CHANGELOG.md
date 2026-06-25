@@ -24,6 +24,8 @@
   authenticated `grok` CLI for niche extraction, comment-demand, and quality-depth signals.
 - **Grok model pinning**: `GROK_MODEL` pins the Grok CLI model for repeatable runs, with
   `GROK_COMMENT_MODEL` / `GROK_QUALITY_MODEL` available for tier-specific A/B tests.
+- **Grok/X boundary documented**: Grok CLI is treated as an LLM reasoning backend only; native
+  X/Twitter demand should be added later as a separate API-backed signal, not inferred from the CLI.
 - **Shared relevance normalization**: live supply scoring and backtest matching now share simple
   normalization for plural/singular, local/locally, cancel spelling, and retire/retiring matches.
 

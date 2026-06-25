@@ -119,6 +119,7 @@ class Config:
     # --- LLM provider for signals E, G ---
     # 'auto' = anthropic SDK if ANTHROPIC_API_KEY set, else the codex CLI.
     # Or force: 'anthropic' | 'codex' | 'claude' | 'agy' | 'grok' (CLIs use their own auth).
+    # Note: LLM_PROVIDER=grok uses the Grok CLI for reasoning only; it is not xAI x_search.
     llm_provider: str = "auto"
     codex_bin: str = "codex"
     # Grok CLI model selection. GROK_MODEL applies to both tiers; tier-specific vars override it.

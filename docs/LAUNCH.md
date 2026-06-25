@@ -8,6 +8,10 @@ YouTube Niche Finder is an open-source evidence engine for finding potentially u
 YouTube niches. It combines public YouTube data, Google Trends, optional LLM signals, optional
 external keyword/RPM data, and validation harnesses.
 
+It does not currently use X/Twitter data. Grok CLI support, when enabled, is an LLM backend for
+reasoning over YouTube evidence; native X data would require a separate xAI `x_search` or X API
+integration.
+
 It is not a promise that a topic will go viral. The goal is to make niche research more
 explainable and easier to improve with community feedback.
 

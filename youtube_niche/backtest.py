@@ -86,7 +86,11 @@ def text_matches_topic(text: str, topic: str) -> bool:
     overlap = tt & tx
     meaningful_topic = tt - GENERIC_MATCH_TOKENS
     meaningful_overlap = overlap - GENERIC_MATCH_TOKENS
-    if len(meaningful_topic) >= 2:
+    if len(meaningful_topic) >= 4:
+        return len(meaningful_overlap) >= 3
+    if len(meaningful_topic) >= 3:
+        return len(meaningful_overlap) >= 3
+    if len(meaningful_topic) == 2:
         return len(meaningful_overlap) >= 2
     return len(overlap) >= max(1, min(2, len(tt)))
 

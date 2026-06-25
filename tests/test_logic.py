@@ -774,6 +774,38 @@ def test_backtest_topic_matching_and_labels():
         "tech companies canceling ai",
     )
     assert text_matches_topic("I Retired Broke... And This Is What It Feels Like", "retiring broke")
+    assert text_matches_topic(
+        "These 7 REASONS Will Make You File for Social Security at Age 62",
+        "social security at 62",
+    )
+    assert text_matches_topic(
+        "How To Become Debt Free Fast,Best Budgeting Tips 2026,Dave Ramsey Inspired Budget Plan,make money,",
+        "how to become debt free",
+    )
+    assert text_matches_topic(
+        "Real Estate Vs Stocks — The Real Math (Which One Will Make You More Money?)",
+        "real estate vs stocks",
+    )
+    assert not text_matches_topic(
+        "Real Estate Vs Stocks — The Real Math (Which One Will Make You More Money?)",
+        "real estate syndication",
+    )
+    assert text_matches_topic(
+        "$25/week into Fidelity Index Funds will SURPASS Your Full-Time Job ($4800 /month)",
+        "fidelity index funds investing",
+    )
+    assert text_matches_topic(
+        "Steps to start a SUCCESSFUL small business in 2026 Everything you need to know",
+        "start small business 2026",
+    )
+    assert text_matches_topic(
+        "The Top 5 AI Businesses To Start In 2026",
+        "ai business ideas 2026",
+    )
+    assert text_matches_topic(
+        "Start Selling Online in 2026 | A Beginner's Guide to eBay!",
+        "how to sell on ebay",
+    )
 
     breakouts = [
         {"video_id": "a", "title": title},
@@ -912,6 +944,57 @@ def test_backtest_default_holdout_start_uses_stable_date_boundary():
 
     now = dt.datetime(2026, 6, 25, 14, 46, 12, tzinfo=dt.timezone.utc)
     assert _default_holdout_start(now, 180).isoformat() == "2025-12-27T00:00:00+00:00"
+
+
+def test_failure_audit_compares_curated_and_discovered_seed_coverage():
+    from pathlib import Path
+
+    from youtube_niche.audit import audit_backtest_report, write_failure_audit
+    from youtube_niche.subtopics import save_discovered
+
+    report = """# Backtest — AI / AI tools
+
+_Generated 20260625-123742. Holdout window: 2025-12-27 to now._
+
+## Metrics
+
+- **breakout videos**: 2
+- **scored candidates**: 1
+- **positive candidates**: 0
+- **first hit rank**: none
+
+## Holdout Breakouts
+
+- 31724/day · 9,610 subs · Why Tech CEOs Are Quietly Cancelling Their AI Plans
+- 4368/day · 32,200 subs · Want to Run AI Agents Locally? Here is The Bare Minimum Setup/Build
+
+## Ranked Candidates
+
+1. **local business ai automation** — 24% (miss, raw 50%, confidence 47%)
+"""
+    with tempfile.TemporaryDirectory() as d:
+        report_path = Path(d) / "bt.md"
+        report_path.write_text(report)
+        registry_path = Path(d) / "reg.json"
+        save_discovered(
+            "AI / AI tools",
+            ["run ai agents locally", "tech companies canceling ai"],
+            meta={"generated_at": "2026-06-25T18:00:00+00:00"},
+            path=registry_path,
+        )
+
+        summary, details = audit_backtest_report(report_path, registry_path)
+        assert summary["curated_covered"] == 0
+        assert summary["discovered_covered"] == 2
+        assert summary["discovered_timing"] == "after-or-unknown-holdout"
+        assert "seed-source gap" in summary["assessment"]
+        assert len(details) == 2
+
+        csv_path, md_path = write_failure_audit([report_path], d, registry_path)
+        assert csv_path.exists() and md_path.exists()
+        text = md_path.read_text()
+        assert "Why Tech CEOs" in text
+        assert "tech companies canceling ai" in text
 
 
 def test_backtest_metrics_split_by_source():

@@ -198,6 +198,7 @@ python -m youtube_niche.backtest --domain "AI" --query-samples 2 --max-candidate
 python -m youtube_niche.backtest --domain "AI" --candidate-source effective   # replay --from-domain seeds
 python -m youtube_niche.backtest --domain "AI" --candidate-source temporal --cutoff 2026-01-01
 python -m youtube_niche.backtest --aggregate
+python -m youtube_niche.audit --out-dir out   # no-quota audit of existing backtest miss reports
 
 # Forward-test — save today's scored topics for 30/60/90-day follow-up
 python -m youtube_niche "off-grid solar for vans" --snapshot
@@ -261,6 +262,11 @@ when the discovered registry was generated before the tested holdout window.
 topics from a window before the holdout, freezes that list for the run, scores with pre-holdout
 searches, and tests against the later holdout. For the conservative curated baseline, use
 `--candidate-source subtopics`.
+
+Use `python -m youtube_niche.audit --out-dir out` when quota is exhausted or after a weak backtest.
+It reads existing backtest Markdown reports, compares holdout breakout titles against curated and
+discovered seeds, and flags whether the failure looks like seed-source coverage, matching, or
+ranking/scoring. It does not call YouTube.
 
 **No API key? Try it keyless.** `python -m youtube_niche.backtest --fixtures` runs the whole
 backtest against built-in synthetic fixture data — no credentials, no quota. It's how CI and new

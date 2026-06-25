@@ -16,13 +16,22 @@ STOPWORDS = {
 }
 
 TOKEN_NORMALIZATIONS = {
+    "businesses": "business",
+    "budgeting": "budget",
     "canceled": "cancel",
     "cancelled": "cancel",
     "canceling": "cancel",
     "cancelling": "cancel",
+    "ceo": "company",
+    "ceos": "company",
+    "investing": "invest",
+    "investments": "invest",
     "locally": "local",
     "retired": "retire",
     "retiring": "retire",
+    "selling": "sell",
+    "sells": "sell",
+    "sold": "sell",
 }
 
 

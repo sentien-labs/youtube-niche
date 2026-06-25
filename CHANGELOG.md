@@ -26,8 +26,12 @@
   `GROK_COMMENT_MODEL` / `GROK_QUALITY_MODEL` available for tier-specific A/B tests.
 - **Grok/X boundary documented**: Grok CLI is treated as an LLM reasoning backend only; native
   X/Twitter demand should be added later as a separate API-backed signal, not inferred from the CLI.
+- **Offline backtest failure audit**: `python -m youtube_niche.audit` reads existing backtest
+  reports with no quota, compares missed breakouts against curated/discovered seeds, and surfaces
+  whether failures are mostly seed coverage, matching, or ranking/scoring.
 - **Shared relevance normalization**: live supply scoring and backtest matching now share simple
-  normalization for plural/singular, local/locally, cancel spelling, and retire/retiring matches.
+  normalization for plural/singular, local/locally, cancel spelling, retire/retiring, business,
+  sell/selling, and invest/investing matches, with stricter checks for broad partial overlaps.
 
 ### Validation
 

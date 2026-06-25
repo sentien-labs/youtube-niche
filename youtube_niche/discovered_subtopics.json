@@ -1,0 +1,49 @@
+{
+  "AI / AI tools": {
+    "breakout_count": 2,
+    "generated_at": "2026-06-25T18:00:03.552624+00:00",
+    "method": "llm:agy",
+    "source": "winners-first (holdout breakouts 2026-06-25)",
+    "subtopics": [
+      "run ai agents locally",
+      "local ai agent setup",
+      "build local ai pc",
+      "why ai projects fail",
+      "tech companies canceling ai",
+      "corporate ai strategy"
+    ]
+  },
+  "Business / make money online": {
+    "breakout_count": 6,
+    "generated_at": "2026-06-25T18:00:13.702981+00:00",
+    "method": "llm:agy",
+    "source": "winners-first (holdout breakouts 2026-06-25)",
+    "subtopics": [
+      "pinterest affiliate marketing",
+      "make money with ai",
+      "start small business 2026",
+      "monthly income funds",
+      "invest in reits",
+      "ai business ideas 2026",
+      "ebay selling for beginners"
+    ]
+  },
+  "Personal finance / investing": {
+    "breakout_count": 11,
+    "generated_at": "2026-06-25T17:59:51.919088+00:00",
+    "method": "llm:agy",
+    "source": "winners-first (holdout breakouts 2026-06-25)",
+    "subtopics": [
+      "social security at 62",
+      "how to become debt free",
+      "dave ramsey budget plan",
+      "retiring broke",
+      "retirement wealth tiers",
+      "dave ramsey retirement advice",
+      "retire at 59 and a half",
+      "real estate vs stocks",
+      "financial mistakes in your 20s",
+      "fidelity index funds investing"
+    ]
+  }
+}

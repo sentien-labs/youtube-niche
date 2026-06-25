@@ -488,18 +488,25 @@ def main(argv=None) -> int:
     elif args.from_domain:
         from .domains import DOMAINS
 
+        from .subtopics import effective_subtopics
+
         match = [d for d in DOMAINS if args.from_domain.lower() in d.name.lower()]
-        if not match or not match[0].subtopics:
+        if not match:
             print(
-                f"No domain with sub-topics matched {args.from_domain!r}. "
+                f"No domain matched {args.from_domain!r}. "
                 f"Known: {[d.name for d in DOMAINS if d.subtopics]}",
                 file=sys.stderr,
             )
             return 1
         domain = match[0]
+        subtopics, source = effective_subtopics(domain)
+        if not subtopics:
+            print(f"No sub-topics for {domain.name!r} (curated or discovered).", file=sys.stderr)
+            return 1
         label = domain.name
-        seeds = dedupe_topics(domain.subtopics)[: cfg.max_seeds]
-        print(f"Stage-2 drill-down into: {label} — {len(seeds)} sub-niches")
+        seeds = dedupe_topics(subtopics)[: cfg.max_seeds]
+        # 'discovered' = data-derived from winners-first breakouts; 'curated' = hand-listed fallback.
+        print(f"Stage-2 drill-down into: {label} — {len(seeds)} sub-niches (source: {source})")
     else:
         if not args.niche:
             print("ERROR: provide a niche, or --from-domain <name>.", file=sys.stderr)

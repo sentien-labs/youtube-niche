@@ -145,6 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-vpd", type=float, default=None, help="min views/day for a breakout (default 100)")
     p.add_argument("--recent-days", type=int, default=None, help="how recent a breakout must be (default 180)")
     p.add_argument("--max-niches", type=int, default=15, help="how many discovered niches to score")
+    p.add_argument("--emit-subtopics", action="store_true",
+                   help="write discovered niches to the subtopics registry (seeds --from-domain) and skip scoring")
+    p.add_argument("--emit-out", default=None, help="registry path (default: packaged discovered_subtopics.json)")
     p.add_argument("--llm-provider", choices=["auto", "anthropic", "codex", "claude", "agy"], default=None)
     p.add_argument("--no-llm", action="store_true", help="skip LLM (keyword niche extraction + no depth)")
     p.add_argument("--no-trends", action="store_true")
@@ -212,6 +215,18 @@ def main(argv=None) -> int:
         print("\nCould not extract niche topics from breakout titles.")
         return 1
     print(f"\nDiscovered {len(niches)} candidate niches ({method}): {niches}")
+
+    if args.emit_subtopics:
+        from .subtopics import save_discovered
+        path = save_discovered(domain.name, niches, meta={
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "breakout_count": len(breakouts),
+            "method": method,
+            "source": "winners-first",
+        }, path=args.emit_out)
+        print(f"\nWrote {len(niches)} discovered subtopics for {domain.name!r} -> {path}")
+        print(f'`--from-domain "{domain.name}"` will now seed stage-2 from these (skipped scoring).')
+        return 0
 
     print("\nScoring discovered niches...")
     per_topic = cfg.per_topic_unit_estimate()

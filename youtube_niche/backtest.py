@@ -29,7 +29,7 @@ from .llm import LLM_PROVIDERS, make_llm
 from .topics import normalize_token
 from .winners import _is_english, _is_junk, _is_short, discover_niches
 from .signals.volume import views_per_day
-from .youtube_client import QuotaExceeded, YouTubeClient
+from .youtube_client import CacheMiss, QuotaExceeded, YouTubeClient
 
 STOP = {
     "the", "a", "an", "to", "of", "for", "in", "on", "how", "why", "what", "best", "top",
@@ -53,6 +53,11 @@ REGISTRY_FIELDS = [
 
 def _parse_date(s: str) -> dt.datetime:
     d = dt.date.fromisoformat(s)
+    return dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc)
+
+
+def _default_holdout_start(now: dt.datetime, holdout_days: int) -> dt.datetime:
+    d = (now - dt.timedelta(days=holdout_days)).date()
     return dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc)
 
 
@@ -105,8 +110,6 @@ def mine_holdout_breakouts(
     seen: set[str] = set()
     now = dt.datetime.now(dt.timezone.utc)
     for term in domain.terms:
-        if client.search_calls_remaining() < 1:
-            break
         try:
             res = client.search(
                 term,
@@ -119,6 +122,8 @@ def mine_holdout_breakouts(
             )
         except QuotaExceeded:
             break
+        except CacheMiss:
+            raise
         except Exception:
             continue
 
@@ -598,7 +603,7 @@ def main(argv=None) -> int:
         llm = make_llm(cfg) if cfg.use_llm else None
 
     now = dt.datetime.now(dt.timezone.utc)
-    holdout_start = _parse_date(args.cutoff) if args.cutoff else now - dt.timedelta(days=args.holdout_days)
+    holdout_start = _parse_date(args.cutoff) if args.cutoff else _default_holdout_start(now, args.holdout_days)
     holdout_end = holdout_start + dt.timedelta(days=args.holdout_days) if args.cutoff else None
     if holdout_end and holdout_end > now:
         holdout_end = None
@@ -607,7 +612,11 @@ def main(argv=None) -> int:
     max_per_term = args.max_per_term if args.max_per_term is not None else cfg.winner_max_per_term
     print(f"Backtesting {domain.name}: holdout {holdout_start.date()} to "
           f"{holdout_end.date() if holdout_end else 'now'}")
-    breakouts = mine_holdout_breakouts(client, cfg, domain, holdout_start, holdout_end, min_vpd, max_per_term)
+    try:
+        breakouts = mine_holdout_breakouts(client, cfg, domain, holdout_start, holdout_end, min_vpd, max_per_term)
+    except CacheMiss as e:
+        print(f"Cache-only miss while mining holdout breakouts: {e}")
+        return 1
     if not breakouts:
         print("No holdout breakouts found.")
         return 1
@@ -618,9 +627,13 @@ def main(argv=None) -> int:
         seed_end = holdout_start - dt.timedelta(days=max(args.seed_gap_days, 0))
         seed_start = seed_end - dt.timedelta(days=max(args.seed_window_days, 1))
         print(f"Temporal seed window: {seed_start.date()} to {seed_end.date()}")
-        seed_breakouts = mine_holdout_breakouts(
-            client, cfg, domain, seed_start, seed_end, min_vpd, max_per_term
-        )
+        try:
+            seed_breakouts = mine_holdout_breakouts(
+                client, cfg, domain, seed_start, seed_end, min_vpd, max_per_term
+            )
+        except CacheMiss as e:
+            print(f"Cache-only miss while mining temporal seed breakouts: {e}")
+            return 1
         if not seed_breakouts:
             print("No pre-holdout seed breakouts found for temporal discovered candidates.")
             return 1
@@ -645,13 +658,8 @@ def main(argv=None) -> int:
         return 1
 
     rows: list[dict] = []
-    per_topic_units = cfg.per_topic_unit_estimate()
-    per_topic_search = cfg.per_topic_search_estimate()
     published_before = _iso_z(holdout_start)
     for i, (topic, source) in enumerate(candidates, 1):
-        if client.search_calls_remaining() < per_topic_search or client.units_remaining() < per_topic_units:
-            print("Stopping early: quota nearly exhausted.")
-            break
         print(f"[{i}/{len(candidates)}] {topic}")
         try:
             row = analyze_topic(topic, client, llm, cfg, domain=domain,

@@ -686,6 +686,50 @@ def test_find_breakouts_drops_noise_and_dedupes_channel():
     assert titles == {"Rent vs buy a house in 2026", "Budget tips part two"}
 
 
+def test_backtest_breakout_mining_allows_cached_searches_when_budget_is_zero():
+    from youtube_niche.backtest import mine_holdout_breakouts
+    from youtube_niche.config import Config
+    from youtube_niche.domains import Domain
+
+    class C:
+        def __init__(self):
+            self.searches = 0
+
+        def search_calls_remaining(self):
+            return 0
+
+        def search(self, q, max_results=30, **k):
+            self.searches += 1
+            return {"items": [{"id": {"videoId": "v0"}}]}
+
+        def videos(self, ids):
+            return {
+                "v0": {
+                    "id": "v0",
+                    "snippet": {
+                        "title": "Rent vs Buy a House in 2026",
+                        "channelId": "c0",
+                        "channelTitle": "x",
+                        "publishedAt": _iso_days_ago(20),
+                        "defaultAudioLanguage": "en",
+                    },
+                    "contentDetails": {"duration": "PT12M"},
+                    "statistics": {"viewCount": "300000"},
+                }
+            }
+
+        def channels(self, ids):
+            return {"c0": {"id": "c0", "statistics": {"subscriberCount": "8000"}}}
+
+    domain = Domain("Demo finance", ["rent vs buy"], 1, 2)
+    cfg = Config()
+    now = dt.datetime.now(dt.timezone.utc)
+    rows = mine_holdout_breakouts(
+        C(), cfg, domain, now - dt.timedelta(days=180), None, min_vpd=100, max_per_term=8
+    )
+    assert [r["title"] for r in rows] == ["Rent vs Buy a House in 2026"]
+
+
 def test_keyword_niches_extracts_repeated_phrases():
     from youtube_niche.winners import _keyword_niches
 
@@ -861,6 +905,13 @@ def test_retryable_errors_do_not_burn_quota():
             yc.time.sleep = orig_sleep
         assert client.search_calls_used() == 1  # 2 retries charged nothing
         cache.close()
+
+
+def test_backtest_default_holdout_start_uses_stable_date_boundary():
+    from youtube_niche.backtest import _default_holdout_start
+
+    now = dt.datetime(2026, 6, 25, 14, 46, 12, tzinfo=dt.timezone.utc)
+    assert _default_holdout_start(now, 180).isoformat() == "2025-12-27T00:00:00+00:00"
 
 
 def test_backtest_metrics_split_by_source():

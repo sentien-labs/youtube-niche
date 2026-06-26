@@ -84,7 +84,7 @@ Good first contributions include:
 
 | # | Signal | Source | What it measures |
 |---|--------|--------|------------------|
-| A | **Outlier** | videos + channels | views ÷ subscribers — topic-carried hits = beatability/portability context |
+| A | **Outlier** | videos + channels | views ÷ subscribers-at-publish (estimated) — topic-carried hits = beatability/portability context |
 | B | **Supply age** | search `publishedAt` | stale top results = abandoned demand |
 | C | **Competition** | search results | few credible videos + low authority concentration = thin supply |
 | D | **Small channels** | channels | small channels ranking = beatable |
@@ -215,9 +215,11 @@ edit freely. CPM is *not* available from the YouTube API; the registry is the cu
 hand-curated `domain.subtopics` missing this holdout's real small-channel breakouts, often because
 the curated lists skew toward niche minutiae while demand concentrates on broader themes.
 `winners --emit-subtopics` closes the loop: it mines real breakouts, reads the niches off them, and
-records them in a writable user registry. Winners-first broadens its breakout search from the
-domain's hand-written probes with YouTube autocomplete by default; use `--no-probe-autocomplete`
-for a stricter audit run. `--from-domain` defaults to a hybrid candidate list: discovered
+records them in a writable user registry. A breakout counts channels that were small *when they
+published* (subscribers estimated by prorating current subs over channel age), so a channel that
+broke out and then grew past the small-channel cap is still recognized as a winner instead of being
+filtered out. Winners-first broadens its breakout search from the domain's hand-written probes with
+YouTube autocomplete by default; use `--no-probe-autocomplete` for a stricter audit run. `--from-domain` defaults to a hybrid candidate list: discovered
 winners-first niches first, then YouTube autocomplete expansions from the domain probes, then the
 curated fallback list. Use `--candidate-mode expanded` to audit autocomplete + curated coverage
 without discovered topics, `--candidate-mode effective` for the older behavior (discovered if
@@ -268,8 +270,12 @@ Outputs land in `./out/<slug>-<timestamp>.{csv,md}`.
 
 This is directional, not a perfect historical replay. The YouTube Data API does not provide
 historical view/subscriber snapshots, so pre-holdout videos still carry current public counts.
-By default the harness disables comments, LLM quality, and Trends to reduce future leakage; add
-`--with-comments`, `--with-llm`, or `--with-trends` when you intentionally want those signals.
+To avoid the worst distortion, view velocity is measured against the real wall-clock (current
+views ÷ current age = a consistent lifetime-average) rather than dividing current views by the
+shorter pre-holdout window, which would inflate videos published just before the holdout; a
+milder, non-inflationary leak remains. By default the harness disables comments, LLM quality,
+and Trends to reduce future leakage; add `--with-comments`, `--with-llm`, or `--with-trends` when
+you intentionally want those signals. The leakage-free measure is the forward test (below).
 Backtest runs append to `out/backtest-runs.csv`; use `python -m youtube_niche.backtest --aggregate`
 to generate a cross-run validation summary.
 
@@ -293,7 +299,11 @@ construction and are flagged circular. `--candidate-source effective` replays th
 when the discovered registry was generated before the tested holdout window.
 `--candidate-source temporal` is the clean winners-first experiment: it mines breakout-derived seed
 topics from a window before the holdout, freezes that list for the run, scores with pre-holdout
-searches, and tests against the later holdout. For the conservative curated baseline, use
+searches, and tests against the later holdout. Caveat: mining winners from an *older* pre-holdout
+window is recall-limited — viewCount-ordered search increasingly surfaces incumbents as small-channel
+videos age out of the top results, so the temporal path often finds few or no pre-holdout seeds.
+When that happens, lean on the forward test, which sidesteps the problem by snapshotting today's
+winners and resolving them later. For the conservative curated baseline, use
 `--candidate-source subtopics`.
 
 Use `python -m youtube_niche.audit --out-dir out` when quota is exhausted or after a weak backtest.

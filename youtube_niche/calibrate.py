@@ -17,6 +17,7 @@ import datetime as dt
 import sys
 
 from .cache import Cache
+from .channel_size import is_small_channel_at_publish
 from .cli import _select_auth
 from .config import Config
 from .domains import DOMAINS
@@ -57,7 +58,9 @@ def gather_small_channel_vpds(client: YouTubeClient, cfg: Config, terms: list[st
             continue
         for v in records:
             subs = v.get("subs")
-            if v["views"] < cfg.min_view_floor or subs is None or subs <= 0 or subs > cfg.small_channel_subs:
+            if v["views"] < cfg.min_view_floor or subs is None or subs <= 0:
+                continue
+            if not is_small_channel_at_publish(v, cfg.small_channel_subs, now):
                 continue
             d = views_per_day(v, now)
             if d is not None:

@@ -5,26 +5,27 @@ it, not the channel's audience. This is beatability/portability context, not dem
 """
 from __future__ import annotations
 
+import datetime as dt
+
+from ..channel_size import publish_time_sub_denominator
 from ..util import saturating
 
 
-def outlier_score(videos: list[dict], knee: float = 1.0, min_views: int = 1000):
+def outlier_score(
+    videos: list[dict],
+    knee: float = 1.0,
+    min_views: int = 1000,
+    now: dt.datetime | None = None,
+):
     """videos: dicts with 'views' and 'subs'. Returns (score in [0,1], detail)."""
+    now = now or dt.datetime.now(dt.timezone.utc)
     ratios = []
     unknown_subs = 0
     for v in videos:
         if v["views"] < min_views:
             continue
-        subs = v.get("subs")
+        subs = publish_time_sub_denominator(v, now)
         if subs is None:
-            unknown_subs += 1
-            continue
-        try:
-            subs = int(subs)
-        except (TypeError, ValueError):
-            unknown_subs += 1
-            continue
-        if subs <= 0:
             unknown_subs += 1
             continue
         ratios.append(v["views"] / subs)

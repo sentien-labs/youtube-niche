@@ -1071,7 +1071,7 @@ def test_backtest_metrics_split_by_source():
 
 
 def test_resolve_due_snapshots_marks_hit_and_miss():
-    """resolve mines breakouts per due topic: a small-channel match is a hit; a giant is filtered."""
+    """resolve mines breakouts per due topic; small-at-publish matches count as hits."""
     from youtube_niche.config import Config
     from youtube_niche.forward import resolve_due_snapshots
 
@@ -1104,8 +1104,18 @@ def test_resolve_due_snapshots_marks_hit_and_miss():
             }
 
         def channels(self, ids):
-            subs = {"cr1": 8_000, "cg1": 4_000_000}  # giant channel -> filtered out -> miss
-            return {c: {"id": c, "statistics": {"subscriberCount": str(subs[c])}} for c in ids}
+            meta = {
+                "cr1": (200_000, 25),    # grew past cap, but was ~40k at publish -> hit
+                "cg1": (4_000_000, 1000),  # always giant -> filtered out -> miss
+            }
+            return {
+                c: {
+                    "id": c,
+                    "statistics": {"subscriberCount": str(meta[c][0])},
+                    "snippet": {"publishedAt": pub_days_ago(meta[c][1])},
+                }
+                for c in ids
+            }
 
         def search_calls_remaining(self):
             return 10
@@ -1120,7 +1130,7 @@ def test_resolve_due_snapshots_marks_hit_and_miss():
     ]
     rows, summary = resolve_due_snapshots(rows, C(), Config(), now=now)
     assert summary["due"] == 2 and summary["resolved"] == 2 and summary["searches"] == 2
-    assert rows[0]["status"] == "checked" and rows[0]["breakout_count"] == 1  # hit
+    assert rows[0]["status"] == "checked" and rows[0]["breakout_count"] == 1  # small at publish -> hit
     assert rows[0]["notes"].startswith("hit:")
     assert rows[1]["status"] == "pending"  # horizon not yet due
     assert rows[2]["status"] == "checked" and rows[2]["breakout_count"] == 0  # giant -> miss
@@ -1632,6 +1642,55 @@ def test_subs_at_publish_est_prorates_by_channel_age():
     assert subs_at_publish_est({"subs": 42_000, "published_at": iso(10)}, now) == 42_000
     # Unknown current subs => None (cannot estimate).
     assert subs_at_publish_est({"subs": None}, now) is None
+
+
+def test_scoring_counts_grew_past_cap_channel_as_newcomer_at_publish():
+    """Current-large channels still prove newcomer demand when tiny at publish."""
+    from youtube_niche.evidence import video_evidence_rows
+    from youtube_niche.signals.volume import volume_score
+
+    cfg = Config()
+    cfg.volume_knee_vpd = 100
+    now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+
+    def iso(days):
+        return (now - dt.timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
+    video = {
+        "video_id": "v1",
+        "title": "Rent vs buy a house in 2026",
+        "channel_id": "c1",
+        "channel_title": "Fast Grower",
+        "published_at": iso(30),
+        "channel_published_at": iso(35),
+        "views": 300_000,
+        "subs": 200_000,  # current subs now exceed the 50k cap
+        "duration_s": 600,
+    }
+
+    _, volume_detail = volume_score([video], knee=cfg.volume_knee_vpd, now=now)
+    assert volume_detail["newcomer_sample"] == 1
+    assert volume_detail["newcomer_vpd"] == 10_000
+
+    supply, supply_detail = supply_scores(
+        [video],
+        total_results=1,
+        topic="rent vs buy a house",
+        min_small_channel_vpd=cfg.min_small_channel_vpd,
+        now=now,
+    )
+    assert supply["small_channel_gap"] == 1.0
+    assert supply_detail["small_channel_frac"] == 1.0
+
+    outlier, outlier_detail = outlier_score([video], knee=1.0, now=now)
+    assert outlier > 0.90
+    assert outlier_detail["max_ratio"] == 10.5
+
+    rows = video_evidence_rows("rent vs buy a house", [video], cfg, volume_knee=100, now=now)
+    assert rows[0]["evidence_role"] == "newcomer_breakout"
+    assert rows[0]["small_channel"] is True
+    assert rows[0]["small_channel_current"] is False
+    assert rows[0]["subs_at_publish_est"] == 28_571
 
 
 def test_find_breakouts_includes_channel_that_grew_past_cap():

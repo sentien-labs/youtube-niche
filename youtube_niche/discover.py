@@ -18,6 +18,7 @@ from pathlib import Path
 from statistics import mean, median
 
 from .cache import Cache
+from .channel_size import publish_time_sub_denominator
 from .cli import _select_auth  # reuse auth selection (API key or OAuth)
 from .config import Config
 from .domains import DOMAINS
@@ -95,9 +96,18 @@ def assess_domain(domain, client: YouTubeClient, cfg: Config, use_trends: bool, 
         if credible:
             known_subs = [v for v in credible if v.get("subs") is not None and v["subs"] > 0]
             if known_subs:
+                publish_sub_denoms = [
+                    publish_time_sub_denominator(v, now) for v in known_subs
+                ]
+                known_publish_denoms = [d for d in publish_sub_denoms if d is not None]
                 prevalence.append(
-                    sum(1 for v in known_subs if v["views"] / v["subs"] >= OUTLIER_PREVALENCE_RATIO)
-                    / len(known_subs)
+                    sum(
+                        1
+                        for v, denom in zip(known_subs, publish_sub_denoms)
+                        if denom is not None and v["views"] / denom >= OUTLIER_PREVALENCE_RATIO
+                    )
+                    / len(known_publish_denoms)
+                    if known_publish_denoms else 0.0
                 )
                 all_subs.extend(v["subs"] for v in known_subs)
             views_all.extend(v["views"] for v in credible)

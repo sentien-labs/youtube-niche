@@ -141,7 +141,7 @@ def mine_topic_breakouts(client, cfg, topic: str, since: dt.datetime, until: dt.
     from .backtest import text_matches_topic
     from .enrich import enrich
     from .signals.volume import views_per_day
-    from .winners import _is_english, _is_junk, _is_short
+    from .winners import _is_english, _is_junk, _is_short, is_small_channel_at_publish, subs_at_publish_est
 
     try:
         res = client.search(
@@ -158,7 +158,9 @@ def mine_topic_breakouts(client, cfg, topic: str, since: dt.datetime, until: dt.
     out: list[dict] = []
     for v in records:
         subs = v.get("subs")
-        if v["views"] < cfg.min_view_floor or subs is None or subs <= 0 or subs > cfg.small_channel_subs:
+        if v["views"] < cfg.min_view_floor or subs is None or subs <= 0:
+            continue
+        if not is_small_channel_at_publish(v, cfg.small_channel_subs, now):
             continue
         if _is_short(v) or _is_junk(v) or not _is_english(v):
             continue
@@ -168,6 +170,7 @@ def mine_topic_breakouts(client, cfg, topic: str, since: dt.datetime, until: dt.
         if vpd is None or vpd < min_vpd:
             continue
         v["_vpd"] = vpd
+        v["_subs_at_publish_est"] = subs_at_publish_est(v, now)
         out.append(v)
     return out
 

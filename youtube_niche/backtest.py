@@ -26,6 +26,7 @@ from pathlib import Path
 
 from .cache import Cache
 from .candidates import domain_probe_terms, domain_seed_candidates
+from .channel_size import is_small_channel_at_publish, publish_time_sub_denominator, subs_at_publish_est
 from .cli import _select_auth, analyze_topic
 from .config import Config
 from .domains import DOMAINS
@@ -33,7 +34,7 @@ from .enrich import enrich
 from .llm import LLM_PROVIDERS, make_llm
 from .relevance import relevance_score
 from .topics import normalize_token
-from .winners import _is_english, _is_junk, _is_short, discover_niches, is_small_channel_at_publish, subs_at_publish_est
+from .winners import _is_english, _is_junk, _is_short, discover_niches
 from .signals.volume import views_per_day
 from .youtube_client import CacheMiss, QuotaExceeded, YouTubeClient
 
@@ -158,8 +159,8 @@ def mine_holdout_breakouts(
             if vpd is None or vpd < min_vpd:
                 continue
             v["_vpd"] = vpd
-            v["_ratio"] = v["views"] / subs
             v["_subs_at_publish_est"] = subs_at_publish_est(v, now)
+            v["_ratio"] = v["views"] / (publish_time_sub_denominator(v, now) or subs)
             scored.append(v)
         scored.sort(key=lambda v: v["_vpd"], reverse=True)
         for v in scored[:max_per_term]:

@@ -17,6 +17,7 @@ from collections import Counter
 
 from .cache import Cache
 from .candidates import domain_probe_terms
+from .channel_size import is_small_channel_at_publish, publish_time_sub_denominator, subs_at_publish_est
 from .cli import _select_auth, analyze_topic
 from .config import Config
 from .domains import DOMAINS
@@ -66,45 +67,6 @@ def _is_junk(v: dict) -> bool:
     return any(j in t for j in _JUNK_TITLE)
 
 
-def subs_at_publish_est(v: dict, now: dt.datetime) -> int | None:
-    """Estimate the channel's subscriber count WHEN the video was published.
-
-    The API exposes only CURRENT subs, so a channel that was small at publish but has since grown
-    past the small-channel cap is wrongly excluded by a current-subs filter — and the breakout
-    video that drove that growth is exactly the winner we want to keep. We prorate current subs by
-    the channel's age at publish vs. now (assumes ~linear growth: crude, but strictly better than
-    current-subs for catching channels that blew up via the video). Falls back to current subs when
-    the channel creation date is unknown. Returns None only when current subs is unknown.
-    """
-    subs = v.get("subs")
-    if subs is None:
-        return None
-    created_iso, pub_iso = v.get("channel_published_at"), v.get("published_at")
-    if not created_iso or not pub_iso:
-        return subs
-    try:
-        created = dt.datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
-        posted = dt.datetime.fromisoformat(pub_iso.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return subs
-    channel_age_now = (now - created).total_seconds()
-    if channel_age_now <= 0:
-        return subs
-    frac = max(0.0, min(1.0, (posted - created).total_seconds() / channel_age_now))
-    return int(subs * frac)
-
-
-def is_small_channel_at_publish(v: dict, cap: int, now: dt.datetime) -> bool:
-    """True if the channel was plausibly at/below ``cap`` subscribers when the video was posted.
-
-    ``est`` can be 0 for a brand-new channel whose breakout video is among its first uploads —
-    that is the *strongest* newcomer signal, so it must count as small. Callers already exclude
-    unknown/zero CURRENT subs before this check, so a 0 estimate here means "tiny at publish".
-    """
-    est = subs_at_publish_est(v, now)
-    return est is not None and est <= cap
-
-
 def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],
                    recent_days: int, min_vpd: float, max_per_term: int) -> list[dict]:
     """Breakout = SMALL channel + recent + high view velocity. Proof of capturable demand."""
@@ -142,8 +104,8 @@ def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],
             if vpd is None or vpd < min_vpd:
                 continue
             v["_vpd"] = vpd
-            v["_ratio"] = v["views"] / subs
             v["_subs_at_publish_est"] = subs_at_publish_est(v, now)
+            v["_ratio"] = v["views"] / (publish_time_sub_denominator(v, now) or subs)
             scored.append(v)
         scored.sort(key=lambda v: v["_vpd"], reverse=True)
         for v in scored[:max_per_term]:

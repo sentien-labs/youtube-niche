@@ -152,7 +152,8 @@ def _sample_signal_summary(
         velocity_now=velocity_now,
     )
     o_score, o_detail = outlier_score(
-        relevant_videos, knee=cfg.outlier_knee, min_views=cfg.min_view_floor
+        relevant_videos, knee=cfg.outlier_knee, min_views=cfg.min_view_floor,
+        now=velocity_now or as_of,
     )
     s_scores, s_detail = supply_scores(
         videos,

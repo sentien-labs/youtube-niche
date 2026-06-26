@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 from statistics import median
 
+from ..channel_size import is_small_channel_at_publish
 from ..util import clamp01, saturating
 
 VPD_KNEE = 500.0  # median views/day that maps to a volume score of ~0.5
@@ -48,11 +49,11 @@ def volume_score(
     """Returns (median-volume score in [0,1], detail with p75/recent/newcomer demand scores).
 
     ``now`` is the decision-point clock used for recency classification (is a video "recent"?).
-    ``velocity_now`` is the clock used to turn cumulative views into views/day. They differ only
-    in as-of/backtest mode: ``v["views"]`` is always the CURRENT cumulative count, so dividing it
-    by ``(as_of - pub)`` over-states velocity (current views over a shorter past window). Using the
-    real wall-clock for the denominator measures a consistent lifetime-average velocity instead.
-    Defaults to ``now`` so live scoring is unchanged.
+    ``velocity_now`` is the clock used to turn cumulative views into views/day and to interpret
+    current subscriber counts for publish-time size estimates. It differs from ``now`` only in
+    as-of/backtest mode: ``v["views"]`` and ``v["subs"]`` are current, so dividing or prorating
+    them against ``as_of`` over-states velocity/size. Defaults to ``now`` so live scoring is
+    unchanged.
     """
     now = now or dt.datetime.now(dt.timezone.utc)
     vnow = velocity_now or now
@@ -80,7 +81,10 @@ def volume_score(
     small_vpds = [
         vpd
         for v, vpd in vpds_by_video
-        if vpd is not None and v.get("subs") is not None and 0 < v["subs"] <= small_channel_subs
+        if vpd is not None
+        and v.get("subs") is not None
+        and v["subs"] > 0
+        and is_small_channel_at_publish(v, small_channel_subs, vnow)
     ]
     newcomer_vpd = median(small_vpds) if small_vpds else None
     newcomer_volume = saturating(newcomer_vpd, knee) if newcomer_vpd is not None else None

@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 from statistics import mean, median
 
+from .channel_size import is_small_channel_at_publish, publish_time_sub_denominator, subs_at_publish_est
 from .relevance import relevance_score
 from .util import clamp01, saturating
 
@@ -20,6 +21,7 @@ VIDEO_EVIDENCE_FIELDS = [
     "channel_url",
     "views",
     "subs",
+    "subs_at_publish_est",
     "views_per_day",
     "age_days",
     "published_at",
@@ -28,7 +30,9 @@ VIDEO_EVIDENCE_FIELDS = [
     "relevance_score",
     "relevance_method",
     "small_channel",
+    "small_channel_current",
     "views_per_sub",
+    "views_per_sub_current",
     "demand_score",
     "beatability_score",
     "newcomer_proof_score",
@@ -115,22 +119,35 @@ def video_evidence_rows(
     """Rank sampled videos by how strongly they prove demand is capturable.
 
     ``now`` is the decision-point clock (shown as ``age_days``). ``velocity_now`` is the clock used
-    for views/day; in as-of/backtest mode it should be the real wall-clock so current cumulative
-    views are not divided by a shorter past window. Defaults to ``now``.
+    for views/day and publish-time subscriber estimates; in as-of/backtest mode it should be the
+    real wall-clock because cumulative views and subscribers are current. Defaults to ``now``.
     """
     knee = volume_knee or getattr(cfg, "volume_knee_vpd", 500.0)
-    vnow = velocity_now or now
+    vnow = velocity_now or now or dt.datetime.now(dt.timezone.utc)
     rows: list[dict] = []
 
     for v in videos:
         views = v.get("views") or 0
         subs = v.get("subs")
+        try:
+            subs_int = int(subs) if subs is not None else None
+        except (TypeError, ValueError):
+            subs_int = None
+        subs_publish = subs_at_publish_est(v, vnow)
+        publish_subs = publish_time_sub_denominator(v, vnow)
         age = _age_days(v.get("published_at"), now=now)
         vpd = _views_per_day(views, _age_days(v.get("published_at"), now=vnow))
         rel = relevance_score(topic, v.get("title"))
         relevant = rel.relevant
-        small = subs is not None and 0 < subs <= cfg.small_channel_subs
-        views_per_sub = (views / subs) if subs else None
+        small_current = (
+            subs_int is not None and 0 < subs_int <= cfg.small_channel_subs
+        )
+        small = (
+            publish_subs is not None
+            and is_small_channel_at_publish(v, cfg.small_channel_subs, vnow)
+        )
+        views_per_sub = (views / publish_subs) if publish_subs else None
+        views_per_sub_current = (views / subs_int) if subs_int and subs_int > 0 else None
         demand_score = saturating(vpd, knee)
         beatability_score = saturating(views_per_sub, cfg.outlier_knee) if views_per_sub else 0.0
 
@@ -166,6 +183,7 @@ def video_evidence_rows(
             "channel_url": _channel_url(v.get("channel_id")),
             "views": views,
             "subs": subs,
+            "subs_at_publish_est": subs_publish,
             "views_per_day": _round(vpd),
             "age_days": _round(age),
             "published_at": v.get("published_at"),
@@ -173,8 +191,10 @@ def video_evidence_rows(
             "relevant": relevant,
             "relevance_score": _round(rel.score),
             "relevance_method": rel.method,
-            "small_channel": small if subs is not None else None,
+            "small_channel": small if subs_int is not None else None,
+            "small_channel_current": small_current if subs_int is not None else None,
             "views_per_sub": _round(views_per_sub),
+            "views_per_sub_current": _round(views_per_sub_current),
             "demand_score": _round(demand_score),
             "beatability_score": _round(beatability_score),
             "newcomer_proof_score": _round(newcomer_proof_score),

@@ -10,6 +10,7 @@ import datetime as dt
 from collections import Counter
 from statistics import median
 
+from ..channel_size import is_small_channel_at_publish
 from ..relevance import relevance_score
 from ..topics import topic_tokens
 from ..util import clamp01, saturating
@@ -73,10 +74,11 @@ def supply_scores(
     """Returns ({competition_gap, age_gap, small_channel_gap}, detail). Each gap in [0,1].
 
     ``now`` is the decision-point clock (used for age/recency of supply). ``velocity_now`` is the
-    clock used for the small-channel views/day filter; in as-of/backtest mode it should be the real
-    wall-clock so current cumulative views are not divided by a shorter past window. Defaults to ``now``.
+    clock used for the small-channel views/day filter and publish-time size estimate; in
+    as-of/backtest mode it should be the real wall-clock because views/subscribers are current.
+    Defaults to ``now``.
     """
-    vnow = velocity_now or now
+    vnow = velocity_now or now or dt.datetime.now(dt.timezone.utc)
     raw_credible = [v for v in videos if v["views"] >= min_views]
     relevance_results = [relevance_score(topic, str(v.get("title", ""))) for v in raw_credible]
     credible = [v for v, rel in zip(raw_credible, relevance_results) if rel.relevant]
@@ -134,7 +136,10 @@ def supply_scores(
             if (_views_per_day(v, now=vnow) is not None and _views_per_day(v, now=vnow) >= min_small_channel_vpd)
         ]
         if successful_known:
-            small = sum(1 for v in successful_known if v["subs"] <= small_channel_subs)
+            small = sum(
+                1 for v in successful_known
+                if v["subs"] > 0 and is_small_channel_at_publish(v, small_channel_subs, vnow)
+            )
             small_frac = small / len(successful_known)
         else:
             small_frac = 0.0

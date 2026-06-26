@@ -68,8 +68,15 @@ def supply_scores(
     recent_supply_knee: float = 8.0,
     min_small_channel_vpd: float = 50.0,
     now: dt.datetime | None = None,
+    velocity_now: dt.datetime | None = None,
 ):
-    """Returns ({competition_gap, age_gap, small_channel_gap}, detail). Each gap in [0,1]."""
+    """Returns ({competition_gap, age_gap, small_channel_gap}, detail). Each gap in [0,1].
+
+    ``now`` is the decision-point clock (used for age/recency of supply). ``velocity_now`` is the
+    clock used for the small-channel views/day filter; in as-of/backtest mode it should be the real
+    wall-clock so current cumulative views are not divided by a shorter past window. Defaults to ``now``.
+    """
+    vnow = velocity_now or now
     raw_credible = [v for v in videos if v["views"] >= min_views]
     relevance_results = [relevance_score(topic, str(v.get("title", ""))) for v in raw_credible]
     credible = [v for v, rel in zip(raw_credible, relevance_results) if rel.relevant]
@@ -124,7 +131,7 @@ def supply_scores(
     if known_subs:
         successful_known = [
             v for v in known_subs
-            if (_views_per_day(v, now=now) is not None and _views_per_day(v, now=now) >= min_small_channel_vpd)
+            if (_views_per_day(v, now=vnow) is not None and _views_per_day(v, now=vnow) >= min_small_channel_vpd)
         ]
         if successful_known:
             small = sum(1 for v in successful_known if v["subs"] <= small_channel_subs)

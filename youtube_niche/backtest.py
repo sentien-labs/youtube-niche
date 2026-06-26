@@ -7,8 +7,12 @@ The harness asks a practical question:
 
 Important limitation: the YouTube Data API does not expose historical view/subscriber snapshots.
 We can restrict evidence to videos published before the holdout window, but the view counts on
-those older videos are still current. Treat this as a directional validation harness, not a
-perfect historical replay.
+those older videos are still current. To avoid the worst distortion, view velocity is measured
+against the real wall-clock (current views / current age = a consistent lifetime-average), NOT
+current views / (as_of - pub), which would inflate just-before-holdout videos by dividing current
+views over a short past window. A milder, non-inflationary leak remains — lifetime-average velocity
+still includes views earned after the holdout — so treat this as a directional validation harness,
+not a perfect historical replay. The leakage-free measure is the forward test (forward.py).
 """
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ from .enrich import enrich
 from .llm import LLM_PROVIDERS, make_llm
 from .relevance import relevance_score
 from .topics import normalize_token
-from .winners import _is_english, _is_junk, _is_short, discover_niches
+from .winners import _is_english, _is_junk, _is_short, discover_niches, is_small_channel_at_publish, subs_at_publish_est
 from .signals.volume import views_per_day
 from .youtube_client import CacheMiss, QuotaExceeded, YouTubeClient
 
@@ -143,7 +147,10 @@ def mine_holdout_breakouts(
             continue
         for v in records:
             subs = v.get("subs")
-            if v["views"] < cfg.min_view_floor or subs is None or subs <= 0 or subs > cfg.small_channel_subs:
+            if v["views"] < cfg.min_view_floor or subs is None or subs <= 0:
+                continue
+            # Small-at-publish, not small-now: a winner that grew past the cap is still a winner.
+            if not is_small_channel_at_publish(v, cfg.small_channel_subs, now):
                 continue
             if _is_short(v) or _is_junk(v) or not _is_english(v):
                 continue
@@ -152,6 +159,7 @@ def mine_holdout_breakouts(
                 continue
             v["_vpd"] = vpd
             v["_ratio"] = v["views"] / subs
+            v["_subs_at_publish_est"] = subs_at_publish_est(v, now)
             scored.append(v)
         scored.sort(key=lambda v: v["_vpd"], reverse=True)
         for v in scored[:max_per_term]:
@@ -310,7 +318,9 @@ def write_backtest_report(
         "",
         "This is a retrospective proxy backtest. Searches for scoring are restricted to videos "
         "published before the holdout start when possible, but YouTube returns current public "
-        "view/subscriber counts, not historical snapshots.",
+        "view/subscriber counts, not historical snapshots. View velocity is measured against the "
+        "real wall-clock (lifetime-average), not the as-of date, so just-before-holdout videos are "
+        "no longer inflated; a milder non-inflationary leak remains.",
         "",
         "## Metrics",
         "",

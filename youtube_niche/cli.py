@@ -134,6 +134,7 @@ def _sample_signal_summary(
     cfg: Config,
     domain=None,
     as_of: dt.datetime | None = None,
+    velocity_now: dt.datetime | None = None,
 ) -> dict:
     relevant_videos = filter_relevant_videos(videos, topic)
 
@@ -148,6 +149,7 @@ def _sample_signal_summary(
         recent_success_knee=cfg.recent_success_knee,
         small_channel_subs=cfg.small_channel_subs,
         now=as_of,
+        velocity_now=velocity_now,
     )
     o_score, o_detail = outlier_score(
         relevant_videos, knee=cfg.outlier_knee, min_views=cfg.min_view_floor
@@ -164,6 +166,7 @@ def _sample_signal_summary(
         recent_supply_knee=cfg.recent_supply_knee,
         min_small_channel_vpd=cfg.min_small_channel_vpd,
         now=as_of,
+        velocity_now=velocity_now,
     )
     relevance_gate = clamp01((s_detail.get("credible_results") or 0) / max(cfg.min_relevant_results, 1))
     return {
@@ -196,13 +199,22 @@ def analyze_topic(
     domain=None,
     published_before: str | None = None,
     as_of: dt.datetime | None = None,
+    velocity_now: dt.datetime | None = None,
 ) -> dict | None:
     samples, videos, total, queries = collect_topic_samples(topic, client, cfg, published_before=published_before)
     if not videos:
         return None
 
+    # In as-of/backtest mode, measure view velocity against the real wall-clock (cumulative views
+    # are always current), while recency/age classification still uses the historical `as_of`.
+    # Live mode (as_of is None) leaves velocity on the default clock — unchanged behavior.
+    # Callers may pin `velocity_now` explicitly for reproducibility (e.g. golden tests).
+    if velocity_now is None and as_of is not None:
+        velocity_now = dt.datetime.now(dt.timezone.utc)
+
     sample_summaries = [
-        _sample_signal_summary(topic, s["videos"], s["total"], cfg, domain=domain, as_of=as_of)
+        _sample_signal_summary(topic, s["videos"], s["total"], cfg, domain=domain, as_of=as_of,
+                               velocity_now=velocity_now)
         for s in samples
         if s.get("videos")
     ]
@@ -310,6 +322,7 @@ def analyze_topic(
         cfg,
         volume_knee=evidence_knee,
         now=as_of,
+        velocity_now=velocity_now,
     )
     channel_evidence = channel_evidence_rows(topic, video_evidence)
 

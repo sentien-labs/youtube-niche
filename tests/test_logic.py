@@ -1195,7 +1195,9 @@ def test_scoring_golden_is_stable():
     cfg = Config()
     cfg.use_trends = cfg.use_llm = False
     cfg.comment_videos = 0
-    row = analyze_topic("dividend growth investing", C(), None, cfg, as_of=as_of)
+    # Pin the velocity clock to as_of so the golden numbers stay deterministic. (In a real backtest
+    # velocity_now defaults to the wall-clock; pinning it here isolates the scoring math under test.)
+    row = analyze_topic("dividend growth investing", C(), None, cfg, as_of=as_of, velocity_now=as_of)
     assert round(row["opportunity"], 3) == 0.372
     assert round(row["opportunity_raw"], 3) == 0.737
     assert round(row["demand"], 3) == 0.646
@@ -1580,6 +1582,95 @@ def test_report_writes_video_and_channel_evidence_sidecars():
         assert "Top video proof" in md
         assert "Top channel proof" in md
         assert "Evidence snapshot registry" in md
+
+
+def test_velocity_clock_split_de_inflates_backtest():
+    """A video published just before the as-of date must not be inflated by dividing current
+    cumulative views over a short past window. The de-leaked path measures velocity against the
+    real wall-clock (a consistent lifetime-average), giving a strictly lower vpd than the old
+    now=as_of behavior, while pinning velocity_now=as_of reproduces the old number exactly."""
+    from youtube_niche.signals.volume import volume_score
+
+    as_of = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    measured_now = as_of + dt.timedelta(days=170)  # we run the backtest 170 days later
+    # Published 10 days before as_of with 100k current views.
+    pub = (as_of - dt.timedelta(days=10)).isoformat().replace("+00:00", "Z")
+    videos = [{"video_id": "v1", "title": "x", "views": 100_000, "subs": 5_000, "published_at": pub}]
+
+    # Old (leaky) behavior: current views over the 10-day pre-as_of window => ~10k/day.
+    _, leaky = volume_score(videos, now=as_of)
+    # De-leaked: same current views over the true ~180-day lifetime => ~556/day.
+    _, fixed = volume_score(videos, now=as_of, velocity_now=measured_now)
+
+    assert leaky["median_vpd"] > 9_000          # the inflated number
+    assert fixed["median_vpd"] < 600            # de-inflated lifetime-average
+    assert fixed["median_vpd"] < leaky["median_vpd"]
+    # Pinning velocity_now back to as_of reproduces the old behavior exactly (determinism hook).
+    _, pinned = volume_score(videos, now=as_of, velocity_now=as_of)
+    assert pinned["median_vpd"] == leaky["median_vpd"]
+    # Live mode (no velocity_now) is unchanged: equals passing now alone.
+    _, live = volume_score(videos, now=measured_now)
+    _, live_default = volume_score(videos, now=measured_now, velocity_now=None)
+    assert live["median_vpd"] == live_default["median_vpd"]
+
+
+def test_subs_at_publish_est_prorates_by_channel_age():
+    """subs-at-publish ≈ current_subs × (channel_age_at_post / channel_age_now); fallbacks safe."""
+    from youtube_niche.winners import subs_at_publish_est
+
+    now = dt.datetime(2026, 6, 1, tzinfo=dt.timezone.utc)
+    def iso(days):
+        return (now - dt.timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
+    # Channel created 100d ago, now 100k subs. Video posted 10d ago => channel was 90d old => ~90k.
+    v_estab = {"subs": 100_000, "channel_published_at": iso(100), "published_at": iso(10)}
+    assert abs(subs_at_publish_est(v_estab, now) - 90_000) < 2_000
+    # Same channel, video posted 95d ago => channel was only 5d old at post => ~5k (newcomer breakout).
+    v_newcomer = {"subs": 100_000, "channel_published_at": iso(100), "published_at": iso(95)}
+    assert subs_at_publish_est(v_newcomer, now) < 6_000
+    # Missing channel creation date => fall back to current subs (no spurious relaxation).
+    assert subs_at_publish_est({"subs": 42_000, "published_at": iso(10)}, now) == 42_000
+    # Unknown current subs => None (cannot estimate).
+    assert subs_at_publish_est({"subs": None}, now) is None
+
+
+def test_find_breakouts_includes_channel_that_grew_past_cap():
+    """A channel now over the cap but SMALL when it posted the breakout is kept; an always-big
+    channel is still dropped. This is the audit's 'current-subs filter inverts the signal' fix."""
+    from youtube_niche.config import Config
+    from youtube_niche.winners import find_breakouts
+
+    # vid: (title, views, video_age_days, channel_id, current_subs, channel_age_days)
+    rows = {
+        "g0": ("Rent vs buy a house in 2026", 300_000, 30, "c0", 200_000, 35),    # blew up from ~0 -> KEEP
+        "g1": ("Index fund basics explained", 300_000, 30, "c1", 200_000, 1000),  # always big -> DROP
+    }
+
+    class C:
+        def search(self, q, max_results=30, **k):
+            return {"items": [{"id": {"videoId": v}} for v in rows]}
+
+        def videos(self, ids):
+            return {
+                v: {"id": v, "snippet": {"title": tt, "channelId": ch, "channelTitle": "x",
+                    "publishedAt": _iso_days_ago(vage), "defaultAudioLanguage": "en"},
+                    "contentDetails": {"duration": "PT10M"}, "statistics": {"viewCount": str(views)}}
+                for v, (tt, views, vage, ch, subs, chage) in rows.items() if v in ids
+            }
+
+        def channels(self, ids):
+            info = {r[3]: (r[4], r[5]) for r in rows.values()}
+            return {
+                c: {"id": c, "statistics": {"subscriberCount": str(info[c][0])},
+                    "snippet": {"publishedAt": _iso_days_ago(info[c][1])}}
+                for c in ids
+            }
+
+        def search_calls_remaining(self):
+            return 10
+
+    out = find_breakouts(C(), Config(), ["house"], recent_days=180, min_vpd=100, max_per_term=8)
+    assert [v["title"] for v in out] == ["Rent vs buy a house in 2026"]
 
 
 if __name__ == "__main__":

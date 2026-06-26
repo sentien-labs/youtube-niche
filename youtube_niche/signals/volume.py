@@ -43,11 +43,21 @@ def volume_score(
     recent_success_knee: float = 4.0,
     small_channel_subs: int = 50000,
     now: dt.datetime | None = None,
+    velocity_now: dt.datetime | None = None,
 ):
-    """Returns (median-volume score in [0,1], detail with p75/recent/newcomer demand scores)."""
+    """Returns (median-volume score in [0,1], detail with p75/recent/newcomer demand scores).
+
+    ``now`` is the decision-point clock used for recency classification (is a video "recent"?).
+    ``velocity_now`` is the clock used to turn cumulative views into views/day. They differ only
+    in as-of/backtest mode: ``v["views"]`` is always the CURRENT cumulative count, so dividing it
+    by ``(as_of - pub)`` over-states velocity (current views over a shorter past window). Using the
+    real wall-clock for the denominator measures a consistent lifetime-average velocity instead.
+    Defaults to ``now`` so live scoring is unchanged.
+    """
     now = now or dt.datetime.now(dt.timezone.utc)
+    vnow = velocity_now or now
     credible = [v for v in videos if v["views"] >= min_views]
-    vpds_by_video = [(v, views_per_day(v, now)) for v in credible]
+    vpds_by_video = [(v, views_per_day(v, vnow)) for v in credible]
     vpds = [x for _, x in vpds_by_video if x is not None]
     if not vpds:
         return 0.0, {

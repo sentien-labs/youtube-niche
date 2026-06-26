@@ -109,17 +109,24 @@ def video_evidence_rows(
     *,
     volume_knee: float | None = None,
     now: dt.datetime | None = None,
+    velocity_now: dt.datetime | None = None,
     limit: int | None = None,
 ) -> list[dict]:
-    """Rank sampled videos by how strongly they prove demand is capturable."""
+    """Rank sampled videos by how strongly they prove demand is capturable.
+
+    ``now`` is the decision-point clock (shown as ``age_days``). ``velocity_now`` is the clock used
+    for views/day; in as-of/backtest mode it should be the real wall-clock so current cumulative
+    views are not divided by a shorter past window. Defaults to ``now``.
+    """
     knee = volume_knee or getattr(cfg, "volume_knee_vpd", 500.0)
+    vnow = velocity_now or now
     rows: list[dict] = []
 
     for v in videos:
         views = v.get("views") or 0
         subs = v.get("subs")
         age = _age_days(v.get("published_at"), now=now)
-        vpd = _views_per_day(views, age)
+        vpd = _views_per_day(views, _age_days(v.get("published_at"), now=vnow))
         rel = relevance_score(topic, v.get("title"))
         relevant = rel.relevant
         small = subs is not None and 0 < subs <= cfg.small_channel_subs

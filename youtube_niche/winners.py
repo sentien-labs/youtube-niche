@@ -66,6 +66,40 @@ def _is_junk(v: dict) -> bool:
     return any(j in t for j in _JUNK_TITLE)
 
 
+def subs_at_publish_est(v: dict, now: dt.datetime) -> int | None:
+    """Estimate the channel's subscriber count WHEN the video was published.
+
+    The API exposes only CURRENT subs, so a channel that was small at publish but has since grown
+    past the small-channel cap is wrongly excluded by a current-subs filter — and the breakout
+    video that drove that growth is exactly the winner we want to keep. We prorate current subs by
+    the channel's age at publish vs. now (assumes ~linear growth: crude, but strictly better than
+    current-subs for catching channels that blew up via the video). Falls back to current subs when
+    the channel creation date is unknown. Returns None only when current subs is unknown.
+    """
+    subs = v.get("subs")
+    if subs is None:
+        return None
+    created_iso, pub_iso = v.get("channel_published_at"), v.get("published_at")
+    if not created_iso or not pub_iso:
+        return subs
+    try:
+        created = dt.datetime.fromisoformat(created_iso.replace("Z", "+00:00"))
+        posted = dt.datetime.fromisoformat(pub_iso.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return subs
+    channel_age_now = (now - created).total_seconds()
+    if channel_age_now <= 0:
+        return subs
+    frac = max(0.0, min(1.0, (posted - created).total_seconds() / channel_age_now))
+    return int(subs * frac)
+
+
+def is_small_channel_at_publish(v: dict, cap: int, now: dt.datetime) -> bool:
+    """True if the channel was plausibly at/below ``cap`` subscribers when the video was posted."""
+    est = subs_at_publish_est(v, now)
+    return est is not None and 0 < est <= cap
+
+
 def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],
                    recent_days: int, min_vpd: float, max_per_term: int) -> list[dict]:
     """Breakout = SMALL channel + recent + high view velocity. Proof of capturable demand."""
@@ -92,7 +126,10 @@ def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],
             continue
         for v in records:
             subs = v.get("subs")
-            if v["views"] < cfg.min_view_floor or subs is None or subs <= 0 or subs > cfg.small_channel_subs:
+            if v["views"] < cfg.min_view_floor or subs is None or subs <= 0:
+                continue
+            # Small-at-publish, not small-now: keep channels that broke out and then grew past the cap.
+            if not is_small_channel_at_publish(v, cfg.small_channel_subs, now):
                 continue
             if _is_short(v) or _is_junk(v) or not _is_english(v):
                 continue  # Shorts, trailers/podcasts, non-English are not niche signal
@@ -101,6 +138,7 @@ def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],
                 continue
             v["_vpd"] = vpd
             v["_ratio"] = v["views"] / subs
+            v["_subs_at_publish_est"] = subs_at_publish_est(v, now)
             scored.append(v)
         scored.sort(key=lambda v: v["_vpd"], reverse=True)
         for v in scored[:max_per_term]:

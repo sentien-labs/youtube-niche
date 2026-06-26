@@ -53,6 +53,7 @@ def enrich(client, search_items: list[dict], cfg) -> list[dict]:
                 "title": m["snippet"]["title"],
                 "channel_id": m["snippet"]["channelId"],
                 "channel_title": m["snippet"].get("channelTitle", ""),
+                "channel_published_at": ch.get("snippet", {}).get("publishedAt"),
                 "published_at": m["snippet"]["publishedAt"],
                 "views": to_int(m.get("statistics", {}).get("viewCount"), 0),
                 "subs": subs,

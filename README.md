@@ -13,6 +13,13 @@ same time. High demand + high supply = saturated. Low demand + low supply = usua
 cares. High CPM + no demand = not enough. The score gates low view velocity and shows confidence
 so missing evidence cannot quietly look like certainty.
 
+## Sample Output
+
+Want to see the report shape before installing? Open the synthetic
+[`examples/demo-report.md`](examples/demo-report.md). It shows opportunity, demand, monetization,
+low-supply, thin-content, confidence, query consensus, watch-outs, and evidence notes in the same
+format as the offline demo.
+
 ## Quick Evaluation
 
 The easiest way to help is to run the tool on a niche you already understand and tell us where

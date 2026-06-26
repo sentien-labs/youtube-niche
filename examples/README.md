@@ -16,6 +16,8 @@ The command writes a CSV and Markdown report to `out/` without YouTube credentia
 Trends access, or an LLM backend. The numbers are synthetic, but the report shape and caveats
 match the live scorer.
 
+Preview the committed sample: [`demo-report.md`](demo-report.md).
+
 When this repository is public, real example reports should be anonymized before committing:
 
 - remove private research labels and client/customer names;

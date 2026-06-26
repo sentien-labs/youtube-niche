@@ -1644,6 +1644,7 @@ def test_find_breakouts_includes_channel_that_grew_past_cap():
     rows = {
         "g0": ("Rent vs buy a house in 2026", 300_000, 30, "c0", 200_000, 35),    # blew up from ~0 -> KEEP
         "g1": ("Index fund basics explained", 300_000, 30, "c1", 200_000, 1000),  # always big -> DROP
+        "g2": ("My first budget video changed everything", 300_000, 30, "c2", 200_000, 30),  # brand-new channel (est~0) -> KEEP
     }
 
     class C:
@@ -1670,7 +1671,8 @@ def test_find_breakouts_includes_channel_that_grew_past_cap():
             return 10
 
     out = find_breakouts(C(), Config(), ["house"], recent_days=180, min_vpd=100, max_per_term=8)
-    assert [v["title"] for v in out] == ["Rent vs buy a house in 2026"]
+    titles = {v["title"] for v in out}
+    assert titles == {"Rent vs buy a house in 2026", "My first budget video changed everything"}
 
 
 if __name__ == "__main__":

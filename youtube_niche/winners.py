@@ -95,9 +95,14 @@ def subs_at_publish_est(v: dict, now: dt.datetime) -> int | None:
 
 
 def is_small_channel_at_publish(v: dict, cap: int, now: dt.datetime) -> bool:
-    """True if the channel was plausibly at/below ``cap`` subscribers when the video was posted."""
+    """True if the channel was plausibly at/below ``cap`` subscribers when the video was posted.
+
+    ``est`` can be 0 for a brand-new channel whose breakout video is among its first uploads —
+    that is the *strongest* newcomer signal, so it must count as small. Callers already exclude
+    unknown/zero CURRENT subs before this check, so a 0 estimate here means "tiny at publish".
+    """
     est = subs_at_publish_est(v, now)
-    return est is not None and 0 < est <= cap
+    return est is not None and est <= cap
 
 
 def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],

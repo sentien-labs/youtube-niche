@@ -434,8 +434,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="hybrid",
         help=(
             "candidate source for --from-domain. hybrid = discovered + autocomplete + curated; "
-            "expanded = autocomplete + curated "
-            "(default); effective = discovered if present else curated"
+            "expanded = autocomplete + curated; "
+            "effective = discovered if present else curated (default: hybrid)"
         ),
     )
     p.add_argument("--seeds", default=None, help="comma-separated EXACT topics to score (skips autocomplete)")

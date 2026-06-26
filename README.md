@@ -87,7 +87,7 @@ Good first contributions include:
 | A | **Outlier** | videos + channels | views ÷ subscribers-at-publish (estimated) — topic-carried hits = beatability/portability context |
 | B | **Supply age** | search `publishedAt` | stale top results = abandoned demand |
 | C | **Competition** | search results | few credible videos + low authority concentration = thin supply |
-| D | **Small channels** | channels | small channels ranking = beatable |
+| D | **Small channels** | channels | successful videos from channels estimated small at publish = beatable supply |
 | E | **Comment demand** | commentThreads + LLM | "please make a video on X" — literal unmet demand |
 | F | **Trends** | Google Trends (YouTube Search source) | rising interest + breakout queries |
 | G | **Content depth** | transcripts + LLM | how thin the top-ranking videos actually are |
@@ -189,11 +189,11 @@ python -m youtube_niche.discover --domains insurance,crypto --terms 4   # subset
 python -m youtube_niche "off-grid solar for vans"
 python -m youtube_niche --from-domain "personal finance"   # hybrid: discovered + autocomplete + curated
 
-# Winners-first — discover niches FROM proven small-channel breakouts (not a guessed list).
+# Winners-first — discover niches FROM proven small-at-publish breakouts (not a guessed list).
 # It mines domain probes plus autocomplete-expanded probes, then writes data-derived seeds.
 python -m youtube_niche.winners --domain "personal finance" --emit-subtopics
 
-# Backtest — check whether high-ranked candidates match later small-channel breakouts
+# Backtest — check whether high-ranked candidates match later small-at-publish breakouts
 python -m youtube_niche.backtest --domain "AI" --query-samples 2 --max-candidates 10
 python -m youtube_niche.backtest --domain "AI" --candidate-source effective   # replay --from-domain seeds
 python -m youtube_niche.backtest --domain "AI" --candidate-source hybrid      # replay new hybrid source mix
@@ -206,13 +206,14 @@ python -m youtube_niche.audit --out-dir out   # no-quota audit of existing backt
 # Forward-test — save today's scored topics for 30/60/90-day follow-up
 python -m youtube_niche "off-grid solar for vans" --snapshot
 python -m youtube_niche.forward summary
+python -m youtube_niche.forward resolve
 ```
 
 The domain list and its (industry-estimate) CPM ranges live in `youtube_niche/domains.py` —
 edit freely. CPM is *not* available from the YouTube API; the registry is the curated input.
 
 **Winners-first reduces reliance on guessed subtopics.** The first clean backtests showed the
-hand-curated `domain.subtopics` missing this holdout's real small-channel breakouts, often because
+hand-curated `domain.subtopics` missing this holdout's real small-at-publish breakouts, often because
 the curated lists skew toward niche minutiae while demand concentrates on broader themes.
 `winners --emit-subtopics` closes the loop: it mines real breakouts, reads the niches off them, and
 records them in a writable user registry. A breakout counts channels that were small *when they
@@ -228,10 +229,11 @@ source-specific audits.
 
 Scored reports also write sidecar CSVs ending in `-video-evidence.csv` and
 `-channel-evidence.csv`. These preserve the sampled videos/channels behind each topic score:
-views/day, subscribers, views/subscribers, title relevance, small-channel breakout role, and URLs.
-They include category-wide ranks so you can inspect the strongest video and channel proof across
-the whole report, not just inside one topic. The rank is based on a combined opportunity-evidence
-score: topic opportunity multiplied by the sampled video's or channel's proof strength.
+views/day, current subscribers, estimated subscribers-at-publish, publish-time and current
+views/subscriber ratios, title relevance, small-at-publish breakout role, and URLs. They include
+category-wide ranks so you can inspect the strongest video and channel proof across the whole
+report, not just inside one topic. The rank is based on a combined opportunity-evidence score:
+topic opportunity multiplied by the sampled video's or channel's proof strength.
 Reports also append the best proof rows to `out/evidence-snapshots.csv` with `pending` status, so
 the exact videos/channels that justified a category can be checked later instead of only the
 topic-level forecast.
@@ -264,7 +266,7 @@ Outputs land in `./out/<slug>-<timestamp>.{csv,md}`.
 
 `python -m youtube_niche.backtest` runs a retrospective proxy backtest:
 
-1. mine small-channel breakout videos in a holdout window;
+1. mine small-at-publish breakout videos in a holdout window;
 2. score candidate niches using searches restricted to videos published before that holdout;
 3. report whether high-ranked candidates matched the later breakout videos.
 
@@ -300,8 +302,9 @@ when the discovered registry was generated before the tested holdout window.
 `--candidate-source temporal` is the clean winners-first experiment: it mines breakout-derived seed
 topics from a window before the holdout, freezes that list for the run, scores with pre-holdout
 searches, and tests against the later holdout. Caveat: mining winners from an *older* pre-holdout
-window is recall-limited — viewCount-ordered search increasingly surfaces incumbents as small-channel
-videos age out of the top results, so the temporal path often finds few or no pre-holdout seeds.
+window is recall-limited — viewCount-ordered search increasingly surfaces incumbents as
+small-at-publish videos age out of the top results, so the temporal path often finds few or no
+pre-holdout seeds.
 When that happens, lean on the forward test, which sidesteps the problem by snapshotting today's
 winners and resolving them later. For the conservative curated baseline, use
 `--candidate-source subtopics`.
@@ -326,14 +329,15 @@ python -m youtube_niche.forward resolve   # check due checkpoints against real b
 ```
 
 This creates pending 30/60/90-day checkpoints in `out/forward-snapshots.csv`. The goal is to
-compare today's scores against future small-channel breakouts instead of relying only on
+compare today's scores against future small-at-publish breakouts instead of relying only on
 retrospective proxy backtests.
 
 `resolve` closes the loop with zero leakage: for every checkpoint whose due date has passed, it
-mines small-channel breakout videos for that exact topic inside the prediction window
+mines small-at-publish breakout videos for that exact topic inside the prediction window
 `[created_at, due_at]`, then marks the row `checked` with a `breakout_count` and a hit/miss note
-(one search per topic, quota-guarded). Re-run it whenever `summary` shows rows are **due** — this
-is the honest, prospective validation the backtest can only approximate.
+(one search per topic, quota-guarded). Channels that were small when they published but later grew
+past the cap still count as hits. Re-run it whenever `summary` shows rows are **due** — this is the
+honest, prospective validation the backtest can only approximate.
 
 ### Community calibration — does the score actually work?
 
@@ -402,6 +406,7 @@ youtube_niche/
   config.py          keys, quota budget, weights, thresholds
   cache.py           sqlite request cache (saves quota)
   youtube_client.py  quota-aware, cached YouTube Data API wrapper
+  channel_size.py    subscribers-at-publish estimates and small-at-publish checks
   llm.py             pluggable LLM backends for signals E, G; no native X search
   transcript.py      transcript fetch (signal G)
   seeds.py           autocomplete seed expansion

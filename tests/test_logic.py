@@ -275,6 +275,7 @@ class _FakeAnalyzeClient:
 def test_analyze_topic_emits_stage_two_cpm_gate_and_confidence():
     cfg = Config()
     cfg.use_trends = False
+    cfg.use_durability = False
     cfg.use_llm = False
     cfg.top_n = 3
     cfg.enrich_n = 3
@@ -296,6 +297,7 @@ def test_analyze_topic_gates_unrelated_search_demand():
     """High-view fuzzy search results must not count as demand for the exact niche."""
     cfg = Config()
     cfg.use_trends = False
+    cfg.use_durability = False
     cfg.use_llm = False
     cfg.top_n = 3
     cfg.enrich_n = 3
@@ -336,6 +338,7 @@ def test_analyze_topic_gates_unrelated_search_demand():
 def test_multi_query_sampling_finds_relevant_later_sample():
     cfg = Config()
     cfg.use_trends = False
+    cfg.use_durability = False
     cfg.use_llm = False
     cfg.top_n = 3
     cfg.enrich_n = 3
@@ -609,6 +612,7 @@ def test_per_domain_knee_changes_demand_gate():
 
     cfg = Config()
     cfg.use_trends = False
+    cfg.use_durability = False
     cfg.use_llm = False
     cfg.top_n = 3
     cfg.enrich_n = 3
@@ -705,6 +709,35 @@ def test_find_breakouts_drops_noise_and_dedupes_channel():
     out = find_breakouts(C(), Config(), ["budget"], recent_days=180, min_vpd=100, max_per_term=20)
     titles = {v["title"] for v in out}
     assert titles == {"Rent vs buy a house in 2026", "Budget tips part two"}
+
+
+def test_durability_slope_math_and_labels():
+    """5-year base slope: rising -> >0.6 (durable), falling -> <0.4 (fading), flat -> ~0.5."""
+    from youtube_niche.signals.trends import _durability_from_series, durability_label
+
+    rising = [10.0] * 52 + [30.0] * 52      # recent year 3x the early year
+    falling = [30.0] * 52 + [10.0] * 52
+    flat = [20.0] * 104
+
+    s_up, r_up = _durability_from_series(rising)
+    s_dn, r_dn = _durability_from_series(falling)
+    s_flat, r_flat = _durability_from_series(flat)
+
+    assert r_up == 3.0 and s_up == 1.0 and durability_label(s_up) == "📈 durable"
+    assert abs(r_dn - 1 / 3) < 1e-9 and s_dn < 0.4 and durability_label(s_dn) == "⚠️ fading"
+    assert abs(r_flat - 1.0) < 1e-9 and abs(s_flat - 0.5) < 1e-9 and durability_label(s_flat) == ""
+    # too few points -> no opinion
+    assert _durability_from_series([1.0, 2.0]) == (None, None)
+    assert durability_label(None) == ""
+
+
+def test_durability_score_offline_is_safe():
+    """With live=False and an empty cache, durability returns None without any network call."""
+    from youtube_niche.cache import Cache
+    from youtube_niche.signals.trends import durability_score
+
+    score, detail = durability_score("dividend growth investing", cache=Cache(":memory:"), live=False)
+    assert score is None and "durability" in detail["status"]
 
 
 def test_find_breakouts_drops_offdomain_category():
@@ -1241,7 +1274,7 @@ def test_scoring_golden_is_stable():
             return []
 
     cfg = Config()
-    cfg.use_trends = cfg.use_llm = False
+    cfg.use_trends = cfg.use_durability = cfg.use_llm = False
     cfg.comment_videos = 0
     # Pin the velocity clock to as_of so the golden numbers stay deterministic. (In a real backtest
     # velocity_now defaults to the wall-clock; pinning it here isolates the scoring math under test.)

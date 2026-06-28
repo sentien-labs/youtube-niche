@@ -96,7 +96,8 @@ Good first contributions include:
 | C | **Competition** | search results | few credible videos + low authority concentration = thin supply |
 | D | **Small channels** | channels | successful videos from channels estimated small at publish = beatable supply |
 | E | **Comment demand** | commentThreads + LLM | "please make a video on X" — literal unmet demand |
-| F | **Trends** | Google Trends (YouTube Search source) | rising interest + breakout queries |
+| F | **Trends** | Google Trends (YouTube Search source) | rising interest + breakout queries (12-month momentum) |
+| F2 | **Durability** | Google Trends (5-year) | structurally rising base (`📈 durable`) vs fading flash (`⚠️ fading`) |
 | G | **Content depth** | transcripts + LLM | how thin the top-ranking videos actually are |
 | H | **Monetization** | curated CPM + keyword intent | domain CPM and advertiser intent proxy |
 | H2 | **External metrics** | optional CSV | imported search-volume/RPM evidence |
@@ -257,7 +258,8 @@ Useful flags:
 | `--query-samples N` | search-query variants per topic; use 3 to reduce single-search noise |
 | `--alphabet-soup` | aggressive autocomplete expansion (more seeds) |
 | `--no-llm` | skip comment + depth signals (no Anthropic key needed) |
-| `--no-trends` | skip Google Trends (faster, avoids rate-limits) |
+| `--no-trends` | skip the 12-month Google Trends momentum signal (faster, avoids rate-limits) |
+| `--no-durability` | skip the 5-year Trends durability check (otherwise runs even under `--no-trends`) |
 | `--quota-budget N` | override the daily unit budget |
 | `--search-limit N` | override the daily `search.list` call budget |
 | `--region-code CC` | YouTube/autocomplete region (default US) |

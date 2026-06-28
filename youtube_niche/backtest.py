@@ -631,6 +631,9 @@ def main(argv=None) -> int:
 
     cfg.use_llm = bool(args.with_llm)
     cfg.use_trends = bool(args.with_trends)
+    # Durability is a 5-year Trends slope to TODAY — inherently look-ahead for a past holdout,
+    # and a live network call the keyless/fixtures path must avoid. Always off in backtest.
+    cfg.use_durability = False
     if not args.with_comments:
         cfg.comment_videos = 0
 

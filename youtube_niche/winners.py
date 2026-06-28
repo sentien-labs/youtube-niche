@@ -25,6 +25,7 @@ from .enrich import enrich
 from .forward import capture_score_snapshot, parse_horizons
 from .llm import LLM_PROVIDERS, make_llm
 from .report import write_reports
+from .signals.trends import durability_label
 from .signals.volume import views_per_day
 from .topics import dedupe_ranked_rows, dedupe_topics
 from .youtube_client import QuotaExceeded, YouTubeClient
@@ -174,7 +175,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="registry path (default: user config overlay; packaged seeds are read-only fallback)")
     p.add_argument("--llm-provider", choices=LLM_PROVIDERS, default=None)
     p.add_argument("--no-llm", action="store_true", help="skip LLM (keyword niche extraction + no depth)")
-    p.add_argument("--no-trends", action="store_true")
+    p.add_argument("--no-trends", action="store_true", help="skip the 12-month Trends momentum signal")
+    p.add_argument("--no-durability", action="store_true",
+                   help="skip the 5-year Trends durability check (runs even under --no-trends)")
     p.add_argument("--top-n", type=int, default=None)
     p.add_argument("--query-samples", type=int, default=None,
                    help="search-query variants per discovered niche (default 1; try 3)")
@@ -197,6 +200,8 @@ def main(argv=None) -> int:
                           keyword_metrics_csv=args.metrics_csv)
     if args.no_trends:
         cfg.use_trends = False
+    if args.no_durability:
+        cfg.use_durability = False
     if args.no_llm:
         cfg.use_llm = False
 
@@ -300,9 +305,12 @@ def main(argv=None) -> int:
     print(f"Quota today: {client.units_spent()} units, {client.search_calls_used()} searches")
     print("\nTop discovered niches:")
     for i, r in enumerate(results[:5], 1):
+        dur = r.get("trends_durability")
+        dur_lbl = durability_label(dur)
+        dur_txt = f", durability {round(dur * 100)}% {dur_lbl}".rstrip() if dur is not None else ""
         print(f"  {i}. {r['topic']} — {round((r.get('opportunity') or 0) * 100)}% "
               f"(raw {round((r.get('opportunity_raw') or 0) * 100)}%, "
-              f"newcomer {round((r.get('newcomer_volume') or 0) * 100)}%)")
+              f"newcomer {round((r.get('newcomer_volume') or 0) * 100)}%{dur_txt})")
     return 0
 
 

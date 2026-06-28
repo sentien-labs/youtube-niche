@@ -136,6 +136,9 @@ class Config:
 
     # --- feature toggles ---
     use_trends: bool = True
+    # 5-year structural-slope durability check (separate Google Trends call from `use_trends`'s
+    # 12-month momentum; controlled independently so `--no-trends` runs can still keep it).
+    use_durability: bool = True
     use_llm: bool = True
 
     # --- io ---

@@ -31,7 +31,7 @@ from .signals.comments import comment_demand_score
 from .signals.outlier import outlier_score
 from .signals.quality import quality_gap_score
 from .signals.supply import filter_relevant_videos, supply_scores
-from .signals.trends import trends_score
+from .signals.trends import durability_score, trends_score
 from .signals.volume import volume_score
 from .topics import dedupe_ranked_rows, dedupe_topics
 from .util import clamp01
@@ -262,6 +262,15 @@ def analyze_topic(
         )
     else:
         t_score, t_detail = None, {"status": "disabled"}
+    # Durability — multi-year (5y) base slope: durable vein vs flash. Separate from the 12-month
+    # momentum signal above, so it still runs under --no-trends. Cached 30d; skip live in cache_only.
+    if cfg.use_durability:
+        d_score, d_detail = durability_score(
+            topic, geo=cfg.trends_geo, cache=client.cache,
+            throttle=not cfg.cache_only, live=not cfg.cache_only,
+        )
+    else:
+        d_score, d_detail = None, {"status": "disabled"}
     # G — quality gap
     if cfg.use_llm:
         q_gap, q_detail = quality_gap_score(
@@ -371,6 +380,9 @@ def analyze_topic(
         "trend_breakout_score": (t_detail or {}).get("breakout_score"),
         "trend_rising_score": (t_detail or {}).get("rising_queries"),
         "trend_rising_terms": "; ".join((t_detail or {}).get("rising_terms") or []),
+        "trends_durability": d_score,
+        "trends_durability_ratio": (d_detail or {}).get("durability_ratio"),
+        "durability_status": (d_detail or {}).get("status"),
         "external_metric_topic": external_metric.topic if external_metric else None,
         "external_demand": external_demand,
         "external_cpm_score": external_cpm_score,
@@ -448,7 +460,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="search-query variants per topic (default 1; try 3 to reduce fuzzy-search noise)",
     )
     p.add_argument("--alphabet-soup", action="store_true", help="aggressive autocomplete expansion")
-    p.add_argument("--no-trends", action="store_true", help="skip Google Trends signal")
+    p.add_argument("--no-trends", action="store_true", help="skip the 12-month Google Trends momentum signal")
+    p.add_argument("--no-durability", action="store_true",
+                   help="skip the 5-year Google Trends durability check (runs even under --no-trends)")
     p.add_argument("--no-llm", action="store_true", help="skip comment + quality LLM signals")
     p.add_argument(
         "--llm-provider",
@@ -489,6 +503,8 @@ def main(argv=None) -> int:
     )
     if args.no_trends:
         cfg.use_trends = False
+    if args.no_durability:
+        cfg.use_durability = False
     if args.no_llm:
         cfg.use_llm = False
 

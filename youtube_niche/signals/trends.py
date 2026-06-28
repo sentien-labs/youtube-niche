@@ -14,8 +14,82 @@ import time
 from ..util import clamp01, saturating
 
 TRENDS_TTL = 7 * 86400  # trends move slowly; a week-old read is fine
+DURABILITY_TTL = 30 * 86400  # a 5-year base barely moves week to week; a month-old read is fine
 _MIN_INTERVAL_S = 1.5   # spacing between live Trends calls (politeness vs rate limits)
 _last_call = [0.0]      # module-level throttle state
+
+
+def _durability_from_series(vals: list[float]):
+    """Recent-year vs early-year average over a multi-year series -> (score in [0,1], ratio).
+
+    Answers a different question than `trends_score`'s 12-month momentum: is the theme on a
+    structurally RISING base (durable vein) or a fading/flat one (likely flash)? Scale-invariant
+    per term, so it survives Trends' 0-100 normalization. ratio 1.0 (flat) -> 0.5; 2.0 -> 1.0; 0 -> 0.
+    """
+    if not vals or len(vals) < 8:
+        return None, None
+    yr = min(52, len(vals) // 2)  # ~52 weekly points = a year; shorter series -> use each half
+    early = (sum(vals[:yr]) / yr) or 1.0
+    recent = sum(vals[-yr:]) / yr
+    ratio = recent / early
+    return clamp01(0.5 + (ratio - 1.0) * 0.5), ratio
+
+
+def durability_label(score: float | None) -> str:
+    """Human flag for a durability score: rising base, fading base, or neither/unknown."""
+    if score is None:
+        return ""
+    if score > 0.6:   # recent year >= ~20% above the early year
+        return "📈 durable"
+    if score < 0.4:   # recent year >= ~20% below the early year
+        return "⚠️ fading"
+    return ""
+
+
+def durability_score(term, geo: str = "US", cache=None, ttl: float = DURABILITY_TTL,
+                     throttle: bool = True, gprop: str = "youtube", live: bool = True):
+    """Multi-year (5y) structural slope for one term. Returns (score in [0,1] or None, detail).
+
+    Distinct from `trends_score` (12-month momentum) — this is the long-run durability filter
+    that separates durable veins from one-week flashes. Cached 30 days (the base moves slowly).
+    """
+    clean = " ".join(str(term).split())
+    ck = cache.key("durability", clean.lower(), geo, gprop) if cache is not None else None
+    if cache is not None:
+        hit = cache.get(ck, max_age=ttl)
+        if hit is not None:
+            return hit.get("score"), {**hit.get("detail", {}), "cached": True}
+    if not live:
+        return None, {"status": "no cached durability"}
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return None, {"status": "pytrends not installed"}
+
+    if throttle:
+        wait = _MIN_INTERVAL_S - (time.time() - _last_call[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.time()
+
+    try:
+        py = TrendReq(hl="en-US", tz=360, timeout=(10, 30))
+        py.build_payload([clean], timeframe="today 5-y", gprop=gprop, geo=geo)
+        iot = py.interest_over_time()
+        vals = ([float(x) for x in iot[clean]]
+                if iot is not None and not iot.empty and clean in iot else [])
+        score, ratio = _durability_from_series(vals)
+        detail = {
+            "status": "ok" if score is not None else "insufficient data",
+            "durability_ratio": round(ratio, 2) if ratio is not None else None,
+            "points": len(vals),
+            "gprop": gprop,
+        }
+        if cache is not None and score is not None:
+            cache.set(ck, {"score": score, "detail": detail})
+        return score, detail
+    except Exception as e:
+        return None, {"status": f"error: {type(e).__name__}"}
 
 
 def _clean_terms(term: str, baseline_terms: list[str] | None) -> list[str]:

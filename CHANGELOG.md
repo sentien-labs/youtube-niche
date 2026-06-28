@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Durability signal (5-year Trends base slope)**: a new long-run check separates durable veins
+  from one-week flashes — `trends_durability` scores whether a niche sits on a structurally rising
+  multi-year base (recent-year vs early-year YouTube-search interest). Surfaced as a `📈 durable` /
+  `⚠️ fading` flag in `winners` output and as columns in the CSV/MD reports. Independent of the
+  12-month momentum signal (`--no-trends` runs still compute it; disable with `--no-durability`),
+  cached 30 days, and forced off in backtests (a slope-to-today is look-ahead for a past holdout).
+
+- **Off-domain breakout filter**: breakouts are now filtered by YouTube category, dropping Gaming /
+  Music / Sports / Film / Autos videos whose finance keywords would otherwise mint bogus niches
+  (e.g. an in-game "money trick" video). Safe globally — every mined domain is money/info/educational.
+
 - **Winners-first → stage-2 loop**: `winners --emit-subtopics` writes breakout-derived niches to
   a writable user registry; `--from-domain` reads shipped discovered seeds plus that user overlay
   before falling back to the hand-curated list (reports `source:`).

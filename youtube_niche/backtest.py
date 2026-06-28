@@ -34,7 +34,7 @@ from .enrich import enrich
 from .llm import LLM_PROVIDERS, make_llm
 from .relevance import relevance_score
 from .topics import normalize_token
-from .winners import _is_english, _is_junk, _is_short, discover_niches
+from .winners import _is_english, _is_junk, _is_offdomain, _is_short, discover_niches
 from .signals.volume import views_per_day
 from .youtube_client import CacheMiss, QuotaExceeded, YouTubeClient
 
@@ -153,7 +153,7 @@ def mine_holdout_breakouts(
             # Small-at-publish, not small-now: a winner that grew past the cap is still a winner.
             if not is_small_channel_at_publish(v, cfg.small_channel_subs, now):
                 continue
-            if _is_short(v) or _is_junk(v) or not _is_english(v):
+            if _is_short(v) or _is_junk(v) or _is_offdomain(v) or not _is_english(v):
                 continue
             vpd = views_per_day(v, now)
             if vpd is None or vpd < min_vpd:

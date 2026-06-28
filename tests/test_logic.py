@@ -707,6 +707,44 @@ def test_find_breakouts_drops_noise_and_dedupes_channel():
     assert titles == {"Rent vs buy a house in 2026", "Budget tips part two"}
 
 
+def test_find_breakouts_drops_offdomain_category():
+    """A finance-keyword title tagged Gaming (in-game currency) is off-domain noise, not a niche.
+
+    Regression for the live leak: "This Bank Trick makes you TON of Money in Crimson Desert"
+    (a video-game money-farming video) surfaced as a personal-finance breakout. Filter by
+    YouTube's own categoryId rather than the unbounded set of game names.
+    """
+    from youtube_niche.config import Config
+    from youtube_niche.winners import find_breakouts
+
+    rows = {  # vid: (title, category_id, channel)
+        "v0": ("How to become debt free fast", "27", "c0"),                  # Education -> KEEP
+        "v1": ("This Bank Trick makes you TON of Money in Crimson Desert", "20", "c1"),  # Gaming -> drop
+        "v2": ("My favorite money playlist", "10", "c2"),                    # Music -> drop
+    }
+
+    class C:
+        def search(self, q, max_results=30, **k):
+            return {"items": [{"id": {"videoId": v}} for v in rows]}
+
+        def videos(self, ids):
+            return {
+                v: {"id": v, "snippet": {"title": tt, "channelId": ch, "channelTitle": "x",
+                    "publishedAt": _iso_days_ago(30), "defaultAudioLanguage": "en", "categoryId": cat},
+                    "contentDetails": {"duration": "PT10M"}, "statistics": {"viewCount": "300000"}}
+                for v, (tt, cat, ch) in rows.items() if v in ids
+            }
+
+        def channels(self, ids):
+            return {c: {"id": c, "statistics": {"subscriberCount": "9000"}} for c in ids}
+
+        def search_calls_remaining(self):
+            return 10
+
+    out = find_breakouts(C(), Config(), ["budget"], recent_days=180, min_vpd=100, max_per_term=20)
+    assert {v["title"] for v in out} == {"How to become debt free fast"}
+
+
 def test_backtest_breakout_mining_allows_cached_searches_when_budget_is_zero():
     from youtube_niche.backtest import mine_holdout_breakouts
     from youtube_niche.config import Config

@@ -41,6 +41,19 @@ _JUNK_TITLE = (
     "(audio)", "live stream", "livestream", "podcast #", "ft.", "feat.",
 )
 
+# YouTube category ids that are OFF-DOMAIN for every domain this tool mines (all are
+# money/info/educational: finance, business, AI, health, etc. — never gaming/music/sports).
+# A "make money" video tagged Gaming is about in-game currency, not a real niche
+# (e.g. "This Bank Trick makes you TON of Money in Crimson Desert"). Filter by YouTube's
+# own category rather than chasing an unbounded list of game/song/team names.
+#   1 Film & Animation · 2 Autos & Vehicles · 10 Music · 17 Sports · 20 Gaming
+_OFFDOMAIN_CATEGORIES = {"1", "2", "10", "17", "20"}
+
+
+def _is_offdomain(v: dict) -> bool:
+    cat = v.get("category_id")
+    return cat is not None and str(cat) in _OFFDOMAIN_CATEGORIES
+
 
 def _is_short(v: dict) -> bool:
     dur = v.get("duration_s")
@@ -98,8 +111,8 @@ def find_breakouts(client: YouTubeClient, cfg: Config, terms: list[str],
             # Small-at-publish, not small-now: keep channels that broke out and then grew past the cap.
             if not is_small_channel_at_publish(v, cfg.small_channel_subs, now):
                 continue
-            if _is_short(v) or _is_junk(v) or not _is_english(v):
-                continue  # Shorts, trailers/podcasts, non-English are not niche signal
+            if _is_short(v) or _is_junk(v) or _is_offdomain(v) or not _is_english(v):
+                continue  # Shorts, trailers/podcasts, off-domain (gaming/music/...), non-English
             vpd = views_per_day(v, now)
             if vpd is None or vpd < min_vpd:
                 continue

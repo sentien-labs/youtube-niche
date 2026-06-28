@@ -59,6 +59,7 @@ def enrich(client, search_items: list[dict], cfg) -> list[dict]:
                 "subs": subs,
                 "duration_s": iso_duration_seconds(m.get("contentDetails", {}).get("duration")),
                 "lang": m["snippet"].get("defaultAudioLanguage") or m["snippet"].get("defaultLanguage"),
+                "category_id": m["snippet"].get("categoryId"),
             }
         )
     return records

@@ -3,22 +3,121 @@
 Retrospective backtests are useful, but the cleanest validation is prospective:
 save today's ranked opportunities, then check 30/60/90 days later whether small-channel
 breakouts appeared in those exact niches.
+
+Ledger hardening (2026-06-30 incident): the LLM backend went silently empty for a whole day,
+`discover_niches` degraded to keyword n-grams without anyone noticing, and the forward snapshot
+for that run wrote a single thin niche ("dave ramsey") straight into the live ledger — and an
+earlier --no-llm run had separately written a junk title-fragment label ("will make"). Three
+guards now sit in front of every write to `out/forward-snapshots.csv`:
+  1. BACKUP  — `out/backups/forward-snapshots-<stamp>.csv` before any append/rewrite (pruned to 30).
+  2. PROVENANCE — an `extraction_method` column records how each row's topic was produced
+     ("llm" | "keyword" | "" for legacy rows), migrated in place on first write with new code.
+  3. JUNK GATE — `_acceptable_label` rejects thin/fragment labels, and a "keyword_degraded"
+     extraction method (LLM enabled but every provider failed) skips snapshotting entirely.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import datetime as dt
+import re
+import shutil
 import sys
 from pathlib import Path
 
 
+# NOTE: `extraction_method` was added after the ledger already had ~177 live rows under the
+# fields below it. `append_snapshot_rows` migrates an old-header file in place (see
+# `_migrate_legacy_header`) — always AFTER taking a backup — so this list can just describe the
+# current/target schema; old files converge to it on their next write.
 SNAPSHOT_FIELDS = [
     "snapshot_id", "created_at", "due_at", "horizon_days", "label", "source",
     "rank", "topic", "opportunity", "opportunity_raw", "confidence", "demand",
     "supply_gap", "cpm_score", "relevance_gate", "query_samples", "status",
-    "checked_at", "breakout_count", "notes",
+    "checked_at", "breakout_count", "notes", "extraction_method",
 ]
+
+# Snapshotting is gated on this method string (set by youtube_niche.winners.discover_niches):
+# an LLM-enabled run whose extraction chain came back completely empty must not pollute the
+# forward-test ledger with generic keyword-n-gram labels.
+DEGRADED_METHOD = "keyword_degraded"
+
+BACKUP_DIR_NAME = "backups"
+MAX_BACKUPS = 30
+
+# Labels rejected outright: title fragments / auxiliary-verb filler that slipped through when
+# --no-llm keyword extraction (or a degraded run) grabbed a raw n-gram like "will make".
+_FILLER_TOKENS = {
+    "will", "make", "makes", "made", "get", "gets", "got", "how", "what", "why", "your",
+    "this", "that", "best", "top", "new", "the", "a", "an", "and", "or", "to", "of", "in",
+    "for", "with", "you", "my", "me", "we", "is", "are", "do", "does", "did", "can", "could",
+    "should", "would", "just", "now", "here", "there", "it", "its", "on", "at", "by", "be",
+    "been", "being", "was", "were",
+}
+
+
+def _backup_ledger(path: Path) -> Path | None:
+    """Copy the current ledger to out/backups/<name>-<stamp>.csv before any append/rewrite, then
+    prune to the newest MAX_BACKUPS. No-op (returns None) if the ledger doesn't exist yet — there's
+    nothing to lose."""
+    if not path.exists():
+        return None
+    backup_dir = path.parent / BACKUP_DIR_NAME
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest = backup_dir / f"{path.stem}-{stamp}{path.suffix}"
+    # Same-second re-entry (e.g. two writes in one test): don't clobber a just-made backup, and
+    # don't fail — just skip taking a second copy this instant.
+    if not dest.exists():
+        shutil.copy2(path, dest)
+    _prune_backups(backup_dir, path.stem)
+    return dest
+
+
+def _prune_backups(backup_dir: Path, stem: str) -> None:
+    backups = sorted(backup_dir.glob(f"{stem}-*"), key=lambda p: p.name)
+    excess = len(backups) - MAX_BACKUPS
+    for p in backups[:max(0, excess)]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _migrate_legacy_header(path: Path) -> None:
+    """If the ledger exists with a header missing `extraction_method` (pre-hardening format),
+    rewrite it in the current schema with old rows getting extraction_method="". Call only AFTER
+    `_backup_ledger`. No-op if the file doesn't exist or is already current."""
+    if not path.exists():
+        return
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        if "extraction_method" in fieldnames:
+            return  # already current
+        rows = list(reader)
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SNAPSHOT_FIELDS)
+        w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") for k in SNAPSHOT_FIELDS})
+
+
+def _acceptable_label(topic: str | None) -> bool:
+    """Reject thin/junk niche labels before they reach the ledger: title fragments like
+    "will make" (an auxiliary-verb phrase, not a niche) must fail; real niches like
+    "dave ramsey" or "dividend growth investing" must pass.
+
+    Rules: at least 2 alphanumeric tokens, AND not every token is filler/stopword-ish.
+    """
+    if not topic or not isinstance(topic, str):
+        return False
+    tokens = re.findall(r"[a-z0-9]+", topic.lower())
+    if len(tokens) < 2:
+        return False
+    if all(t in _FILLER_TOKENS for t in tokens):
+        return False
+    return True
 
 
 def _snapshot_id(label: str) -> str:
@@ -48,7 +147,10 @@ def _fmt(x):
     return x
 
 
-def rows_from_scores(results: list[dict], label: str, source: str, horizons: list[int]) -> list[dict]:
+def rows_from_scores(
+    results: list[dict], label: str, source: str, horizons: list[int],
+    extraction_method: str = "",
+) -> list[dict]:
     created = dt.datetime.now(dt.timezone.utc)
     sid = _snapshot_id(label)
     out = []
@@ -76,12 +178,18 @@ def rows_from_scores(results: list[dict], label: str, source: str, horizons: lis
                 "checked_at": "",
                 "breakout_count": "",
                 "notes": "",
+                "extraction_method": extraction_method or "",
             })
     return out
 
 
 def append_snapshot_rows(path: Path, rows: list[dict]) -> None:
+    """Append rows to the ledger, hardened: backup the current file first (if any), migrate a
+    legacy (pre-extraction_method) header in place, THEN append. Order matters — the backup must
+    capture the file exactly as it was before either the migration or the append touches it."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    _backup_ledger(path)
+    _migrate_legacy_header(path)
     exists = path.exists()
     with path.open("a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=SNAPSHOT_FIELDS)
@@ -98,20 +206,47 @@ def capture_score_snapshot(
     source: str = "score",
     horizons: list[int] | None = None,
     path: str | None = None,
+    extraction_method: str = "",
 ) -> tuple[Path, int]:
-    rows = rows_from_scores(results, label, source, horizons or [30, 60, 90])
+    """Build and append forward-test snapshot rows, gated against the 2026-06-30 incident:
+      - extraction_method == DEGRADED_METHOD ("keyword_degraded"): the LLM was enabled but every
+        provider came back empty, so the caller already fell back to generic keyword n-grams.
+        Skip the ledger write entirely — a degraded run must not pollute forward-test data.
+      - Otherwise, individual rows whose topic fails `_acceptable_label` (e.g. a stray title
+        fragment like "will make") are dropped with a printed notice; the rest are written with
+        their extraction_method recorded ("llm" | "keyword" | whatever the caller passed).
+    """
     p = snapshot_path(out_dir, path)
-    append_snapshot_rows(p, rows)
-    return p, len(rows)
+    if extraction_method == DEGRADED_METHOD:
+        print(
+            "⚠️  Forward snapshot SKIPPED: extraction method is 'keyword_degraded' "
+            "(LLM enabled but all providers failed) — not writing thin labels to the ledger."
+        )
+        return p, 0
+    rows = rows_from_scores(results, label, source, horizons or [30, 60, 90], extraction_method)
+    accepted, rejected = [], []
+    for row in rows:
+        (accepted if _acceptable_label(row.get("topic")) else rejected).append(row)
+    if rejected:
+        bad_topics = sorted({str(r.get("topic")) for r in rejected})
+        print(f"  [forward] skipping {len(rejected)} snapshot row(s) with junk label(s): {bad_topics}")
+    if accepted:
+        append_snapshot_rows(p, accepted)
+    return p, len(accepted)
 
 
-def capture_from_csv(score_csv: Path, out_dir: str, label: str | None, source: str, horizons: list[int]) -> tuple[Path, int]:
+def capture_from_csv(
+    score_csv: Path, out_dir: str, label: str | None, source: str, horizons: list[int],
+    extraction_method: str = "",
+) -> tuple[Path, int]:
     with score_csv.open() as f:
         rows = list(csv.DictReader(f))
     if not rows:
         raise ValueError(f"No rows in {score_csv}")
     label = label or score_csv.stem
-    p, n = capture_score_snapshot(rows, out_dir, label, source=source, horizons=horizons)
+    p, n = capture_score_snapshot(
+        rows, out_dir, label, source=source, horizons=horizons, extraction_method=extraction_method
+    )
     return p, n
 
 
@@ -233,7 +368,11 @@ def resolve_due_snapshots(rows: list[dict], client, cfg, now: dt.datetime | None
 
 
 def rewrite_snapshot_rows(path: Path, rows: list[dict]) -> None:
+    """Full-file rewrite (used by `resolve`). Backed up first, like `append_snapshot_rows` —
+    this is the same ledger file and the same incident risk (a bad rewrite is just as
+    destructive as a bad append)."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    _backup_ledger(path)
     with path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=SNAPSHOT_FIELDS)
         w.writeheader()

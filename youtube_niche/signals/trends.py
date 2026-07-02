@@ -6,10 +6,20 @@ hard, so we:
   - cache successful results to disk (7-day TTL) so each unique term is fetched at most once,
   - throttle live calls (min interval between them),
   - return None on failure so confidence reflects the gap rather than crashing.
+
+Fetch backends: `pytrends` (unofficial, archived upstream April 2025, chronic 429s) is tried
+first; if it fails AND a SerpApi key is configured (`SERPAPI_KEY`), we fall back to SerpApi's
+`google_trends` engine (plain `requests` — no new dependency) so one upstream break doesn't
+silently kill both Trends signals. Both backends normalize to the same plain list-of-floats
+chronological series before any scoring math runs, so the math itself never knows which
+backend produced the data.
 """
 from __future__ import annotations
 
+import os
 import time
+
+import requests
 
 from ..util import clamp01, saturating
 
@@ -17,6 +27,116 @@ TRENDS_TTL = 7 * 86400  # trends move slowly; a week-old read is fine
 DURABILITY_TTL = 30 * 86400  # a 5-year base barely moves week to week; a month-old read is fine
 _MIN_INTERVAL_S = 1.5   # spacing between live Trends calls (politeness vs rate limits)
 _last_call = [0.0]      # module-level throttle state
+
+SERPAPI_URL = "https://serpapi.com/search.json"
+
+
+def _throttle() -> None:
+    wait = _MIN_INTERVAL_S - (time.time() - _last_call[0])
+    if wait > 0:
+        time.sleep(wait)
+    _last_call[0] = time.time()
+
+
+def _pytrends_series(term: str, terms: list[str], timeframe: str, gprop: str, geo: str):
+    """Build a pytrends payload; return (series for `term`, live TrendReq, iot DataFrame).
+
+    Returns (None, None, None) on any failure (import, network, empty/missing column) so callers
+    can fall back to SerpApi. The TrendReq object and the interest_over_time DataFrame are both
+    returned for reuse: pytrends issues a fresh HTTP request on EVERY interest_over_time() call,
+    so `_compute` must read baseline comparison columns from this same DataFrame rather than
+    re-fetching, and it needs the TrendReq for `related_queries()` (a different endpoint with
+    no SerpApi analog here).
+    """
+    try:
+        from pytrends.request import TrendReq
+    except ImportError:
+        return None, None, None
+    try:
+        py = TrendReq(hl="en-US", tz=360, timeout=(10, 30))
+        py.build_payload(terms or [term], timeframe=timeframe, gprop=gprop, geo=geo)
+        iot = py.interest_over_time()
+        vals = ([float(x) for x in iot[term]]
+                if iot is not None and not iot.empty and term in iot else [])
+        return (vals or None), py, iot
+    except Exception:
+        return None, None, None
+
+
+def _serpapi_series(term: str, timeframe: str, gprop: str, geo: str, api_key: str):
+    """Fetch a single-term interest-over-time series from SerpApi's google_trends engine.
+
+    Returns a chronological list of floats, or None on any failure (network, bad payload,
+    missing key). Swallows all exceptions — this is a best-effort fallback, never a hard
+    dependency.
+    """
+    params = {
+        "engine": "google_trends",
+        "q": term,
+        "data_type": "TIMESERIES",
+        "date": timeframe,
+        "api_key": api_key,
+    }
+    if gprop:
+        params["gprop"] = gprop
+    if geo:
+        params["geo"] = geo
+    try:
+        r = requests.get(SERPAPI_URL, params=params, timeout=(10, 30))
+        r.raise_for_status()
+        data = r.json()
+        timeline = (data.get("interest_over_time") or {}).get("timeline_data") or []
+        vals: list[float] = []
+        for point in timeline:
+            values = point.get("values") or []
+            if not values:
+                continue
+            v0 = values[0]
+            raw = v0.get("extracted_value")
+            if raw is None:
+                raw = v0.get("value")
+            if raw is None:
+                continue
+            vals.append(float(raw))
+        return vals or None
+    except Exception:
+        return None
+
+
+def _interest_series(
+    term: str,
+    timeframe: str,
+    *,
+    gprop: str,
+    geo: str,
+    terms: list[str] | None = None,
+    throttle: bool = True,
+):
+    """Chronological interest series for `term`, trying pytrends then SerpApi.
+
+    Returns (series | None, py | None, iot | None, detail). `py` is the live pytrends TrendReq
+    object and `iot` its ALREADY-FETCHED interest_over_time DataFrame when the pytrends path
+    succeeded — callers reuse `iot` for baseline comparison columns (re-calling
+    interest_over_time() would issue a second HTTP request against the 429-fragile endpoint)
+    and `py` for `related_queries()`. Both are None when pytrends failed or SerpApi served the
+    request. `detail` records which backend answered (or that both failed); it never raises.
+    """
+    if throttle:
+        _throttle()
+
+    vals, py, iot = _pytrends_series(term, terms or [term], timeframe, gprop, geo)
+    if vals is not None:
+        return vals, py, iot, {"backend": "pytrends"}
+
+    api_key = os.environ.get("SERPAPI_KEY")
+    if not api_key:
+        return None, None, None, {"backend": "none"}
+
+    vals = _serpapi_series(term, timeframe, gprop, geo, api_key)
+    if vals is not None:
+        print("  [trends] pytrends failed; using SerpApi fallback")
+        return vals, None, None, {"backend": "serpapi"}
+    return None, None, None, {"backend": "none"}
 
 
 def _durability_from_series(vals: list[float]):
@@ -61,29 +181,19 @@ def durability_score(term, geo: str = "US", cache=None, ttl: float = DURABILITY_
             return hit.get("score"), {**hit.get("detail", {}), "cached": True}
     if not live:
         return None, {"status": "no cached durability"}
-    try:
-        from pytrends.request import TrendReq
-    except ImportError:
-        return None, {"status": "pytrends not installed"}
-
-    if throttle:
-        wait = _MIN_INTERVAL_S - (time.time() - _last_call[0])
-        if wait > 0:
-            time.sleep(wait)
-        _last_call[0] = time.time()
 
     try:
-        py = TrendReq(hl="en-US", tz=360, timeout=(10, 30))
-        py.build_payload([clean], timeframe="today 5-y", gprop=gprop, geo=geo)
-        iot = py.interest_over_time()
-        vals = ([float(x) for x in iot[clean]]
-                if iot is not None and not iot.empty and clean in iot else [])
+        vals, _py, _iot, fetch_detail = _interest_series(
+            clean, "today 5-y", gprop=gprop, geo=geo, throttle=throttle,
+        )
+        vals = vals or []
         score, ratio = _durability_from_series(vals)
         detail = {
             "status": "ok" if score is not None else "insufficient data",
             "durability_ratio": round(ratio, 2) if ratio is not None else None,
             "points": len(vals),
             "gprop": gprop,
+            "backend": fetch_detail.get("backend"),
         }
         if cache is not None and score is not None:
             cache.set(ck, {"score": score, "detail": detail})
@@ -136,58 +246,57 @@ def trends_score(
 
 def _compute(term: str, geo: str, throttle: bool, terms: list[str]):
     try:
-        from pytrends.request import TrendReq
-    except ImportError:
-        return None, {"status": "pytrends not installed"}
-
-    if throttle:
-        wait = _MIN_INTERVAL_S - (time.time() - _last_call[0])
-        if wait > 0:
-            time.sleep(wait)
-        _last_call[0] = time.time()
-
-    try:
-        py = TrendReq(hl="en-US", tz=360, timeout=(10, 25))
-        py.build_payload(terms or [term], timeframe="today 12-m", gprop="youtube", geo=geo)
+        vals, py, iot, fetch_detail = _interest_series(
+            term, "today 12-m", gprop="youtube", geo=geo, terms=terms, throttle=throttle,
+        )
+        if vals is None:
+            return None, {"status": "error: no data from any backend"}
 
         slope_score = 0.0
         level_score = 0.0
         breakout_score = 0.0
-        iot = py.interest_over_time()
-        if iot is not None and not iot.empty and term in iot:
-            vals = [float(x) for x in iot[term]]
-            if len(vals) >= 8:
-                half = len(vals) // 2
-                first = sum(vals[:half]) or 1.0
-                second = sum(vals[half:])
-                ratio = second / first
-                slope_score = clamp01((ratio - 0.8) / 1.2)  # 0.8x interest -> 0, 2.0x -> 1
-                recent = vals[-max(4, len(vals) // 4):]
-                prior = vals[:-len(recent)] or vals
-                breakout_score = clamp01(((sum(recent) / len(recent)) / ((sum(prior) / len(prior)) or 1.0) - 0.9) / 1.1)
+        if len(vals) >= 8:
+            half = len(vals) // 2
+            first = sum(vals[:half]) or 1.0
+            second = sum(vals[half:])
+            ratio = second / first
+            slope_score = clamp01((ratio - 0.8) / 1.2)  # 0.8x interest -> 0, 2.0x -> 1
+            recent = vals[-max(4, len(vals) // 4):]
+            prior = vals[:-len(recent)] or vals
+            breakout_score = clamp01(((sum(recent) / len(recent)) / ((sum(prior) / len(prior)) or 1.0) - 0.9) / 1.1)
 
-            own_mean = sum(vals) / len(vals) if vals else 0.0
-            baseline_cols = [t for t in terms[1:] if t in iot]
-            baseline_vals = []
-            for col in baseline_cols:
-                baseline_vals.extend(float(x) for x in iot[col])
-            if baseline_vals:
-                baseline_mean = (sum(baseline_vals) / len(baseline_vals)) or 1.0
-                level_score = saturating(own_mean / baseline_mean, 1.0)
-            else:
-                level_score = saturating(own_mean, 35.0)
+        own_mean = sum(vals) / len(vals) if vals else 0.0
+        baseline_vals: list[float] = []
+        # Baseline (comparison-term) columns reuse the DataFrame `_interest_series` already
+        # fetched — calling py.interest_over_time() again would issue a SECOND HTTP request
+        # (pytrends fetches per call), doubling pressure on the 429-fragile endpoint. SerpApi
+        # is queried single-term here, so baseline comparison degrades gracefully (own_mean
+        # vs a fixed knee) when pytrends didn't serve this request.
+        try:
+            if iot is not None and not iot.empty:
+                baseline_cols = [t for t in terms[1:] if t in iot]
+                for col in baseline_cols:
+                    baseline_vals.extend(float(x) for x in iot[col])
+        except Exception:
+            pass
+        if baseline_vals:
+            baseline_mean = (sum(baseline_vals) / len(baseline_vals)) or 1.0
+            level_score = saturating(own_mean / baseline_mean, 1.0)
+        else:
+            level_score = saturating(own_mean, 35.0)
 
         rising_score = 0.0
         rising_terms: list[str] = []
-        try:
-            rq = py.related_queries().get(term, {}) or {}
-            rising = rq.get("rising")
-            if rising is not None and not rising.empty:
-                rising_score = clamp01(len(rising) / 15.0)
-                if "query" in rising:
-                    rising_terms = [str(x) for x in rising["query"].head(8).tolist()]
-        except Exception:
-            pass
+        if py is not None:
+            try:
+                rq = py.related_queries().get(term, {}) or {}
+                rising = rq.get("rising")
+                if rising is not None and not rising.empty:
+                    rising_score = clamp01(len(rising) / 15.0)
+                    if "query" in rising:
+                        rising_terms = [str(x) for x in rising["query"].head(8).tolist()]
+            except Exception:
+                pass
 
         score = clamp01(
             0.40 * slope_score
@@ -203,6 +312,7 @@ def _compute(term: str, geo: str, throttle: bool, terms: list[str]):
             "rising_queries": round(rising_score, 2),
             "rising_terms": rising_terms,
             "baseline_terms": terms[1:],
+            "backend": fetch_detail.get("backend"),
         }
     except Exception as e:
         return None, {"status": f"error: {type(e).__name__}"}

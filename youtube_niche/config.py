@@ -78,6 +78,9 @@ class Config:
     youtube_oauth_client_secret: str | None = None
     youtube_oauth_token: str | None = None
     anthropic_api_key: str | None = None
+    # Optional fallback for Google Trends (signal F + durability) when pytrends — dead
+    # upstream, archived April 2025 — fails. See youtube_niche/signals/trends.py.
+    serpapi_key: str | None = None
 
     # --- quota (search calls/day + general units/day) ---
     daily_quota_units: int = 10000
@@ -157,6 +160,7 @@ class Config:
             youtube_oauth_client_secret=os.environ.get("YOUTUBE_OAUTH_CLIENT_SECRET"),
             youtube_oauth_token=os.environ.get("YOUTUBE_OAUTH_TOKEN"),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            serpapi_key=os.environ.get("SERPAPI_KEY"),
         )
         cfg.llm_provider = os.environ.get("LLM_PROVIDER", cfg.llm_provider)
         cfg.grok_model = os.environ.get("GROK_MODEL", cfg.grok_model)

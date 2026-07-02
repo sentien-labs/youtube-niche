@@ -10,6 +10,14 @@ Backends:
 Every backend exposes `complete_json(system, user, tier)` and returns parsed JSON or None.
 The whole thing degrades gracefully: no working backend -> LLM.enabled is False -> signals skip.
 
+Failover: `LLM` tries an ordered chain of backends — the configured/primary one first, then the
+remaining available providers in a fixed order (agy -> codex -> claude -> grok -> anthropic) — so a
+backend that silently returns empty output (as `agy` did on 2026-06-30, exit 0 with empty stdout)
+doesn't take the whole run down with it. `LLM.enabled` is chain-aware: a configured-but-missing
+primary binary with working fallbacks still counts as enabled (the user asked for an LLM and one
+exists), while a keyless/binary-less machine stays disabled (quiet keyword path). Opt out with env
+`LLM_FALLBACK=0`. See `LLM._call_chain`.
+
 Important boundary: the Grok CLI backend is only an LLM/reasoning backend. It does not provide
 native X/Twitter data or xAI's API `x_search` tool. If X momentum becomes a scoring signal, keep it
 as a separate API-backed signal module rather than routing it through this generic LLM layer.
@@ -22,8 +30,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 
 LLM_PROVIDERS = ["auto", "anthropic", "codex", "claude", "agy", "grok"]
+
+# Fallback order when the primary backend fails: agy/codex/claude are the CLI backends most
+# likely to be logged in already; grok often needs separate setup; anthropic needs an API key
+# (usage-billed, so it's last — a deliberate cost/reliability tradeoff, not a quality judgment).
+_FALLBACK_ORDER = ["agy", "codex", "claude", "grok", "anthropic"]
 
 
 # --------------------------------------------------------------------- backends
@@ -192,10 +206,78 @@ class GrokCliBackend(_StdoutCliBackend):
 
 
 # ------------------------------------------------------------------------- LLM
+def _fallback_enabled() -> bool:
+    """Env opt-out: LLM_FALLBACK=0 disables the chain (primary backend only). Default on."""
+    val = os.environ.get("LLM_FALLBACK")
+    if val is None:
+        return True
+    return val.strip().lower() not in {"0", "false", "no", "off"}
+
+
 class LLM:
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, fallback_builders: list[tuple[str, Callable]] | None = None):
+        """
+        backend: the primary backend (already constructed; may be unavailable).
+        fallback_builders: ordered [(name, zero-arg builder)] tried, lazily, after the primary
+            fails. Each builder is only invoked if that fallback is actually needed.
+
+        `enabled` is chain-aware: True when the primary is usable OR when fallbacks exist and
+        the chain is on (LLM_FALLBACK != 0). make_llm pre-filters fallback_builders by
+        availability, so a machine with no keys and no CLI binaries still gets enabled=False
+        (callers like winners.discover_niches keep their quiet keyword path), while a machine
+        whose CONFIGURED provider binary is missing but has working alternatives stays enabled
+        and fails over instead of silently degrading (the 2026-06-30 incident class). Evaluated
+        at construction time — the env doesn't change mid-run.
+        """
         self.backend = backend
-        self.enabled = bool(backend and getattr(backend, "available", False))
+        self._fallback_builders = list(fallback_builders or [])
+        self._fallback_cache: dict[str, object] = {}
+        self.last_provider: str | None = None
+        self.enabled = bool(backend and getattr(backend, "available", False)) or (
+            bool(self._fallback_builders) and _fallback_enabled()
+        )
+
+    def _chain(self):
+        """Yield available backends in try-order: primary first, then lazily-built fallbacks."""
+        if self.backend is not None and getattr(self.backend, "available", False):
+            yield self.backend
+        if not _fallback_enabled():
+            return
+        for name, builder in self._fallback_builders:
+            if self.backend is not None and getattr(self.backend, "name", None) == name:
+                continue  # already tried as primary
+            backend = self._fallback_cache.get(name)
+            if backend is None:
+                backend = builder()
+                self._fallback_cache[name] = backend
+            if getattr(backend, "available", False):
+                yield backend
+
+    def _call_chain(self, method_name: str, *args, **kwargs):
+        """Call `method_name(*args, **kwargs)` on each backend in the chain until one returns a
+        non-empty result. Records `last_provider` on success.
+
+        Diagnostics contract (the daily health check greps these lines, so they must never lie):
+          - a fallback is announced only at the moment it is actually about to be called
+            ("falling back to <name>"), so the name is always real — never a provider that was
+            already tried or one that is unavailable;
+          - every empty/failed hop gets its own warning, with no claim about what comes next
+            (the old "trying <next>" phrasing could name an already-consumed provider);
+          - exhaustion ends with the "all providers" line.
+        """
+        tried_any = False
+        for backend in self._chain():
+            if tried_any:
+                print(f"  [llm] falling back to {backend.name}")
+            tried_any = True
+            result = getattr(backend, method_name)(*args, **kwargs)
+            if result:
+                self.last_provider = backend.name
+                return result
+            print(f"  [llm] WARNING: {backend.name} returned empty")
+        if tried_any:
+            print("  [llm] WARNING: all providers returned empty/failed")
+        return None
 
     def classify_comment_demand(self, comments: list[str]):
         """Label which comments express UNMET viewer demand. Returns [{text, is_request}] or None."""
@@ -213,7 +295,7 @@ class LLM:
             f"Comments:\n{numbered}\n\n"
             'Return JSON: {"requests": [<indices of comments that express unmet demand>]}'
         )
-        out = self.backend.complete_json(system, user, tier="cheap", max_tokens=512)
+        out = self._call_chain("complete_json", system, user, tier="cheap", max_tokens=512)
         if not out:
             return None
         idx = {i for i in out.get("requests", []) if isinstance(i, int)}
@@ -233,7 +315,7 @@ class LLM:
             f'Topic: "{topic}"\nTranscript (may be truncated):\n{snippet}\n\n'
             'Return JSON: {"depth": <0.0-1.0>, "reason": "<one short sentence>"}'
         )
-        out = self.backend.complete_json(system, user, tier="quality", max_tokens=256)
+        out = self._call_chain("complete_json", system, user, tier="quality", max_tokens=256)
         if not out:
             return None
         try:
@@ -258,24 +340,80 @@ class LLM:
             f"Breakout video titles:\n{numbered}\n\n"
             f'Return JSON: {{"topics": [<up to {max_niches} specific niche search phrases>]}}'
         )
-        out = self.backend.complete_json(system, user, tier="quality", max_tokens=1024)
+        out = self._call_chain("complete_json", system, user, tier="quality", max_tokens=1024)
         if not out:
             return None
         topics = [t.strip() for t in out.get("topics", []) if isinstance(t, str) and t.strip()]
         return topics[:max_niches] or None
 
+    def hypothesis_statement(
+        self,
+        topic: str,
+        matching_titles: list[str],
+        comment_questions: list[str] | None = None,
+    ) -> str | None:
+        """One-sentence "I help [X] do/overcome [Y]" positioning hypothesis for a niche.
 
-def make_llm(cfg) -> LLM:
-    """Build an LLM from cfg.llm_provider."""
-    provider = (getattr(cfg, "llm_provider", "auto") or "auto").lower()
+        X = a specific audience, Y = a concrete felt outcome or pain — grounded in the breakout
+        titles that actually matched this niche (+ up to 5 real viewer questions, when available).
+        No mechanism/method clause ("with Z") and never "everyone": this is a promise a creator
+        could say out loud in one breath, not a content plan. Report-only, nice-to-have — callers
+        must degrade silently on any failure (see winners.py), same spirit as the other LLM signals
+        but with no health-check warnings, since a missing hypothesis is not an outage.
 
+        Routed through the same failover chain as every other signal here (`_call_chain`). Returns
+        the hypothesis string, or None if the LLM is disabled, every backend fails, or the reply
+        doesn't parse into a valid "I help ..." sentence under 160 chars.
+        """
+        if not self.enabled or not topic or not matching_titles:
+            return None
+        titles = "\n".join(f"- {t[:120]}" for t in matching_titles[:8])
+        system = (
+            "You are a YouTube positioning strategist. Given a niche topic and titles of breakout "
+            "videos that just proved demand for it, write ONE hypothesis sentence a creator could "
+            "say out loud in one breath: \"I help [X] do/overcome [Y]\" where X is a SPECIFIC "
+            "audience (never 'everyone') and Y is a CONCRETE felt outcome or pain — not a mechanism "
+            "or method. Do NOT add a 'with <tool/method>' clause. Reply ONLY with JSON."
+        )
+        user_parts = [f'Niche topic: "{topic}"', f"Breakout video titles:\n{titles}"]
+        questions = [q.strip() for q in (comment_questions or []) if isinstance(q, str) and q.strip()]
+        if questions:
+            numbered_q = "\n".join(f"- {q[:160]}" for q in questions[:5])
+            user_parts.append(f"Real viewer questions:\n{numbered_q}")
+        user_parts.append('Return JSON: {"hypothesis": "I help ... "}')
+        user = "\n\n".join(user_parts)
+        out = self._call_chain("complete_json", system, user, tier="cheap", max_tokens=200)
+        if not out:
+            return None
+        hypothesis = out.get("hypothesis")
+        if not isinstance(hypothesis, str):
+            return None
+        hypothesis = hypothesis.strip()
+        if not hypothesis.lower().startswith("i help "):
+            return None
+        if len(hypothesis) >= 160:
+            return None
+        return hypothesis
+
+
+def _is_available(name: str, cfg) -> bool:
+    """Cheap pre-construction availability probe, so we don't build backends we'll never use.
+    CLI backends: binary on PATH. anthropic: an API key is set."""
+    if name == "anthropic":
+        return bool(getattr(cfg, "anthropic_api_key", None))
+    bins = {"codex": getattr(cfg, "codex_bin", "codex") or "codex", "claude": "claude",
+            "agy": "agy", "grok": "grok"}
+    bin_name = bins.get(name)
+    return bool(bin_name and shutil.which(bin_name))
+
+
+def _provider_builders(cfg) -> dict[str, Callable]:
     grok_default_model = getattr(cfg, "grok_model", None)
     grok_models = {
         "cheap": getattr(cfg, "grok_comment_model", None) or grok_default_model,
         "quality": getattr(cfg, "grok_quality_model", None) or grok_default_model,
     }
-
-    builders = {
+    return {
         "anthropic": lambda: AnthropicBackend(
             cfg.anthropic_api_key, cfg.llm_comment_model, cfg.llm_quality_model
         ),
@@ -287,6 +425,20 @@ def make_llm(cfg) -> LLM:
         "grok": lambda: GrokCliBackend(models={k: v for k, v in grok_models.items() if v}),
     }
 
+
+def make_llm(cfg) -> LLM:
+    """Build an LLM from cfg.llm_provider, with an ordered failover chain behind it.
+
+    Primary = the explicitly configured provider (or auto's pick, unchanged: anthropic SDK if a
+    key is present, else the codex CLI). Fallbacks = the remaining providers in fixed order
+    agy -> codex -> claude -> grok -> anthropic, filtered to those actually available, and
+    excluding whichever one is already primary. Fallback backends are NOT constructed here —
+    only their (name, builder) pairs are recorded; `LLM._chain` builds one lazily the first time
+    it's actually needed. Disable the whole chain with env LLM_FALLBACK=0.
+    """
+    provider = (getattr(cfg, "llm_provider", "auto") or "auto").lower()
+    builders = _provider_builders(cfg)
+
     if provider != "auto" and provider not in builders:
         print(f"  [llm] unknown provider {provider!r}; using auto")
         provider = "auto"
@@ -294,8 +446,17 @@ def make_llm(cfg) -> LLM:
     if provider == "auto":
         # Prefer the SDK if a key is present, else the verified codex CLI.
         anthro = builders["anthropic"]()
-        return LLM(anthro if anthro.available else builders["codex"]())
-    return LLM(builders[provider]())
+        primary_name = "anthropic" if anthro.available else "codex"
+        primary = anthro if anthro.available else builders["codex"]()
+    else:
+        primary_name = provider
+        primary = builders[provider]()
+
+    fallback_builders = [
+        (name, builders[name]) for name in _FALLBACK_ORDER
+        if name != primary_name and _is_available(name, cfg)
+    ]
+    return LLM(primary, fallback_builders=fallback_builders)
 
 
 def _extract_json(text: str | None):

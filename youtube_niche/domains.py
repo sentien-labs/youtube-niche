@@ -21,6 +21,11 @@ class Domain:
     # Per-domain demand knee (views/day -> 0.5), calibrated from this domain's small-channel
     # scale via `python -m youtube_niche.calibrate`. None = use the global config knee.
     volume_knee_vpd: float | None = None
+    # How well this domain supports selling PRODUCTS (high-ticket coaching/courses > mid/low-ticket
+    # digital products > affiliate > AdSense-only) — distinct from ad CPM. See monetization.py.
+    # Report-only signal (see youtube_niche.monetization); default keeps every other domain-less
+    # or not-yet-scored consumer unaffected.
+    product_fit: float = 0.5
 
     @property
     def cpm_mid(self) -> float:
@@ -55,6 +60,7 @@ DOMAINS: list[Domain] = [
             "high yield savings explained", "net worth tracking",
         ],
         volume_knee_vpd=100.0,  # calibrated: finance small channels' p75 ~100 views/day
+        product_fit=0.9,  # high-ticket coaching/courses + affiliate-rich (brokerages, apps)
     ),
     Domain(
         "Insurance",
@@ -69,6 +75,7 @@ DOMAINS: list[Domain] = [
             "self employed health insurance tax deduction", "car insurance after accident",
             "renters insurance explained", "business liability insurance for consultants",
         ],
+        product_fit=0.6,  # mostly lead-gen/affiliate to carriers; few creator-owned products
     ),
     Domain(
         "Crypto / DeFi",
@@ -81,6 +88,7 @@ DOMAINS: list[Domain] = [
             "crypto portfolio tracking", "solana defi tutorial", "airdrop farming guide",
             "crypto security checklist", "bitcoin etf explained", "defi taxes explained",
         ],
+        product_fit=0.65,  # signals/courses/communities exist, but trust-limited audience
     ),
     Domain(
         "AI / AI tools",
@@ -96,6 +104,7 @@ DOMAINS: list[Domain] = [
             "ai bookkeeping automation", "ai proposal writing workflow",
         ],
         volume_knee_vpd=230.0,  # calibrated p75 small-channel velocity, 2026-06-24
+        product_fit=0.7,  # tool-affiliate heavy tutorials; consulting/coaching fit still emerging
     ),
     Domain(
         "Business / make money online",
@@ -110,6 +119,7 @@ DOMAINS: list[Domain] = [
             "micro saas ideas", "online course presell", "service business systems",
         ],
         volume_knee_vpd=136.0,  # calibrated p75 small-channel velocity, 2026-06-24
+        product_fit=0.9,  # the archetypal high-ticket coaching/course niche (biz-in-a-box offers)
     ),
     Domain(
         "Digital marketing / SaaS",
@@ -122,6 +132,7 @@ DOMAINS: list[Domain] = [
             "local seo for lawyers", "email deliverability setup", "hubspot workflow tutorial",
             "ga4 conversion tracking", "content refresh strategy", "saas churn reduction",
         ],
+        product_fit=0.9,  # B2B agency/consulting + SaaS itself is a high-ticket product category
     ),
     Domain(
         "Real estate",
@@ -134,6 +145,7 @@ DOMAINS: list[Domain] = [
             "real estate syndication fees", "cash out refinance rental", "1031 exchange explained",
             "property management for beginners", "buying duplex as first home", "subject to real estate",
         ],
+        product_fit=0.85,  # strong mentorship/course/syndication-fund culture, close to biz/finance
     ),
     Domain(
         "Software / programming",
@@ -147,6 +159,7 @@ DOMAINS: list[Domain] = [
             "react server components tutorial", "python uv package manager",
             "observability for startups", "api rate limiting design", "sql query optimization",
         ],
+        product_fit=0.65,  # bootcamps/courses exist, but audience skews DIY/free/OSS culture
     ),
     Domain(
         "Health / fitness",
@@ -160,5 +173,6 @@ DOMAINS: list[Domain] = [
             "beginner hypertrophy program", "nutrition for night shift workers",
             "meal prep for insulin resistance", "injury prevention for runners",
         ],
+        product_fit=0.75,  # strong coaching/program fit, tempered by YMYL ad/trust sensitivity
     ),
 ]

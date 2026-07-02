@@ -23,7 +23,9 @@ from .config import Config
 from .domains import DOMAINS
 from .enrich import enrich
 from .forward import capture_score_snapshot, parse_horizons
+from .formats import classify_format, positioning
 from .llm import LLM_PROVIDERS, make_llm
+from .relevance import relevance_score
 from .report import write_reports
 from .signals.trends import durability_label
 from .signals.volume import views_per_day
@@ -148,12 +150,56 @@ def _keyword_niches(titles: list[str], max_niches: int) -> list[str]:
 
 
 def discover_niches(breakouts: list[dict], llm, max_niches: int) -> tuple[list[str], str]:
+    """Returns (niches, method). method is one of:
+      "llm"              — LLM extraction succeeded.
+      "keyword"          — LLM was disabled on purpose (--no-llm / no cfg.use_llm); expected, quiet.
+      "keyword_degraded" — LLM was enabled but every provider returned empty/failed; the keyword
+                            fallback ran anyway, but the labels are thin and the caller must not
+                            let this run pollute the forward-test snapshot ledger.
+    """
     titles = [v["title"] for v in breakouts]
-    if llm is not None and getattr(llm, "enabled", False):
+    llm_was_enabled = llm is not None and getattr(llm, "enabled", False)
+    if llm_was_enabled:
         topics = llm.extract_niches(titles, max_niches=max_niches)
         if topics:
             return topics, "llm"
+        print("⚠️  LLM niche extraction FAILED (all providers empty) — falling back to keyword n-grams.")
+        print("⚠️  Labels will be thin/generic; the forward snapshot for this run will be SKIPPED.")
+        return _keyword_niches(titles, max_niches), "keyword_degraded"
     return _keyword_niches(titles, max_niches), "keyword"
+
+
+def matching_breakouts(topic: str, breakouts: list[dict]) -> list[dict]:
+    """Breakout videos whose title targets `topic` — same topic-to-title matcher analyze_topic
+    itself uses (signals.supply.filter_relevant_videos -> relevance.relevance_score), so "this
+    breakout belongs to this niche" means the same thing here as it does everywhere else the
+    pipeline decides a video is on-topic. Not backtest.text_matches_topic: that module imports
+    discover_niches FROM this one, so importing it back here would create a circular import.
+    """
+    return [v for v in breakouts if relevance_score(topic, v.get("title", "")).relevant]
+
+
+def replication_and_format(topic: str, breakouts: list[dict]) -> tuple[int, str]:
+    """Per-niche replicability signal: how many DISTINCT small channels independently broke out
+    with this topic, and what title format dominates among them.
+
+    Industry logic: the same theme breaking out across several distinct small channels is the
+    strongest replicability signal available here — it means the demand isn't tied to one
+    creator's audience/personality, it's a searchable pattern anyone can walk into. One channel
+    posting 5 videos on the same topic is a channel story (or a spammy upload pattern), not
+    evidence the niche itself is repeatable — so replication counts DISTINCT channel_ids, not
+    matching videos.
+
+    Returns (replication_channels, dominant_format). dominant_format is "" when there are no
+    matching breakouts (nothing to classify).
+    """
+    matches = matching_breakouts(topic, breakouts)
+    replication_channels = len({v.get("channel_id") for v in matches if v.get("channel_id")})
+    if not matches:
+        return replication_channels, ""
+    format_counts = Counter(classify_format(v.get("title", "")) for v in matches)
+    dominant_format = format_counts.most_common(1)[0][0]
+    return replication_channels, dominant_format
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -291,6 +337,31 @@ def main(argv=None) -> int:
         return 1
     results.sort(key=lambda r: (r.get("opportunity") or 0.0), reverse=True)
     results = dedupe_ranked_rows(results)
+
+    # Per-niche viewer-facing enrichments (report-only; never touch opportunity/ranking).
+    # replication_channels/dominant_format from breakout replay; positioning from the niche's own
+    # scored supply metrics. Every result row gets these — the top-5 print loop below additionally
+    # narrates them and (top 5 only) asks the LLM for a one-line positioning hypothesis.
+    for r in results:
+        replication_channels, dominant_format = replication_and_format(r["topic"], breakouts)
+        r["replication_channels"] = replication_channels
+        r["dominant_format"] = dominant_format
+        label, reason = positioning(
+            r.get("newcomer_volume"), r.get("small_channel_frac"), r.get("authority_gap")
+        )
+        r["positioning"] = label
+        r["positioning_reason"] = reason
+        r["hypothesis"] = ""  # top-5-only LLM enrichment below; "" (never None) elsewhere
+
+    if llm is not None and getattr(llm, "enabled", False):
+        for r in results[:5]:
+            matches = matching_breakouts(r["topic"], breakouts)
+            titles = [v["title"] for v in matches]
+            questions = [str(e) for e in (r.get("comment_examples") or [])]
+            hypothesis = llm.hypothesis_statement(r["topic"], titles, comment_questions=questions)
+            if hypothesis:
+                r["hypothesis"] = hypothesis
+
     csv_path, md_path = write_reports(results, cfg.out_dir, f"winners-{domain.name}")
     print(f"\nWrote:\n  {csv_path}\n  {md_path}")
     if args.snapshot:
@@ -300,6 +371,7 @@ def main(argv=None) -> int:
             f"winners-{domain.name}",
             source="youtube_niche.winners",
             horizons=parse_horizons(args.snapshot_horizons),
+            extraction_method=method,
         )
         print(f"Forward snapshot: {snap_rows} rows -> {snap_path}")
     print(f"Quota today: {client.units_spent()} units, {client.search_calls_used()} searches")
@@ -311,6 +383,23 @@ def main(argv=None) -> int:
         print(f"  {i}. {r['topic']} — {round((r.get('opportunity') or 0) * 100)}% "
               f"(raw {round((r.get('opportunity_raw') or 0) * 100)}%, "
               f"newcomer {round((r.get('newcomer_volume') or 0) * 100)}%{dur_txt})")
+        # NEW lines only — the numbered entry above is unchanged for the external stdout parser.
+        replication_channels = r.get("replication_channels") or 0
+        dominant_format = r.get("dominant_format") or ""
+        if replication_channels or dominant_format:
+            repl_bit = f"🔁 replicated across {replication_channels} channels · " if replication_channels >= 3 else ""
+            fmt_bit = f"dominant format: {dominant_format}" if dominant_format else "dominant format: unknown"
+            print(f"     {repl_bit}{fmt_bit}")
+        pos_label = r.get("positioning")
+        if pos_label:
+            reason = r.get("positioning_reason", "")
+            newcomer_vpd = r.get("newcomer_vpd")
+            if pos_label == "Learner-viable" and newcomer_vpd:
+                reason = f"small channels pull {round(newcomer_vpd):,}/day here"
+            print(f"     positioning: {pos_label} — {reason}")
+        hypothesis = r.get("hypothesis")
+        if hypothesis:
+            print(f'     hypothesis: "{hypothesis}"')
     return 0
 
 

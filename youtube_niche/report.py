@@ -86,6 +86,14 @@ CSV_FIELDS = [
     "quality_attempted",
     "quality_scored",
     "avg_depth",
+    # Viewer-facing enrichments (additive, appended at the end — see formats.py/winners.py/llm.py).
+    # Rows from entry points other than winners.py (e.g. cli.py --seeds) won't populate
+    # positioning/dominant_format/replication_channels/hypothesis; _fmt(None) -> "" for those.
+    "product_fit",
+    "positioning",
+    "dominant_format",
+    "replication_channels",
+    "hypothesis",
 ]
 
 
@@ -377,5 +385,21 @@ def _topic_block(i: int, r: dict) -> list[str]:
             f"monthly searches {_num(r.get('external_monthly_searches'))} · "
             f"CPM/RPM {_num(r.get('external_cpm'))}"
         )
+    # Viewer-facing enrichments (report.py section) — missing on rows from entry points that
+    # don't compute them (e.g. cli.py --seeds); .get(...) with defaults keeps this crash-free.
+    if r.get("hypothesis"):
+        out.append(f'- _Hypothesis:_ "{r["hypothesis"]}"')
+    positioning_bits = []
+    if r.get("positioning"):
+        positioning_bits.append(f"positioning **{r['positioning']}**")
+    if r.get("dominant_format"):
+        positioning_bits.append(f"dominant format {r['dominant_format']}")
+    replication_channels = r.get("replication_channels") or 0
+    if replication_channels >= 3:
+        positioning_bits.append(f"replicated across {replication_channels} channels")
+    if r.get("product_fit") is not None:
+        positioning_bits.append(f"product fit {_pct(r.get('product_fit'))}")
+    if positioning_bits:
+        out.append("- _Positioning:_ " + " · ".join(positioning_bits))
     out.append("")
     return out

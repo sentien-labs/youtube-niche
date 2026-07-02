@@ -23,7 +23,7 @@ from .evidence import channel_evidence_rows, video_evidence_rows
 from .external import match_external_metric
 from .forward import capture_score_snapshot, parse_horizons
 from .llm import LLM_PROVIDERS, make_llm
-from .monetization import monetization_score
+from .monetization import monetization_score, product_fit_score
 from .report import write_reports
 from .score import confidence_score, opportunity_score
 from .seeds import expand_seeds
@@ -280,6 +280,8 @@ def analyze_topic(
         q_gap, q_detail = None, {"status": "disabled", "videos": []}
 
     cpm_score, cpm_detail = monetization_score(topic, domain, full_scale=cfg.cpm_full_scale)
+    # Report-only axis, separate from ad-CPM monetization above: does NOT feed opportunity_score.
+    product_fit = product_fit_score(domain, topic)
     external_metric = match_external_metric(topic, cfg.keyword_metrics_csv)
     external_demand = external_metric.demand_score if external_metric else None
     external_cpm_score = external_metric.cpm_score if external_metric else None
@@ -391,6 +393,7 @@ def analyze_topic(
         "cpm_source": cpm_detail.get("cpm_source"),
         "cpm_mid": cpm_detail.get("cpm_mid"),
         "ad_intent": cpm_detail.get("ad_intent"),
+        "product_fit": product_fit,
         "quality_status": q_detail.get("status"),
         "quality_attempted": quality_attempted,
         "quality_scored": quality_scored,

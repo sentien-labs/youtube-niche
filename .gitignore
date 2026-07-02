@@ -7,3 +7,4 @@ __pycache__/
 out/
 .env
 .secrets/
+scratch_logs/

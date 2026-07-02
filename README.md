@@ -13,6 +13,11 @@ same time. High demand + high supply = saturated. Low demand + low supply = usua
 cares. High CPM + no demand = not enough. The score gates low view velocity and shows confidence
 so missing evidence cannot quietly look like certainty.
 
+Don't have a niche in mind yet? Claude Code users can run the
+[`niche-coach`](.claude/skills/niche-coach/SKILL.md) skill: it interviews you on background,
+skills, and interests, then validates candidate niches against this repo's live demand/supply
+pipeline instead of asserting demand from priors.
+
 ## Sample Output
 
 Want to see the report shape before installing? Open the synthetic
@@ -183,6 +188,28 @@ provider, with its own raw evidence and calibration.
 Note: CLI backends spawn one subprocess per call (~5–20s each), so a large run with depth
 scoring takes a while — keep `--max-seeds` modest while tuning.
 
+## Reliability
+
+A 2026-06-30 incident (one LLM backend went silently empty for a day, degrading niche extraction
+and writing a thin label into the live forward-test ledger without anyone noticing) motivated
+three hardening passes:
+
+- **LLM failover chain.** `LLM_PROVIDER`/`--llm-provider` still picks the primary backend, but on
+  an empty response the tool now fails over through the remaining providers in a fixed order
+  (`agy` → `codex` → `claude` → `grok` → `anthropic`), filtered to whichever are actually
+  available. Every hop prints a `[llm]` warning, so a degraded run is loud instead of silent. Set
+  `LLM_FALLBACK=0` to disable the chain and use only the configured primary.
+- **Google Trends resilience.** `pytrends` (unofficial, dead upstream, chronic 429s) is tried
+  first for both the 12-month momentum signal and the 5-year durability signal; if it fails and
+  `SERPAPI_KEY` is set, the tool falls back to SerpApi's `google_trends` engine (plain HTTP, no
+  new dependency). See `.env.example` for the free-tier signup note.
+- **Forward-ledger hardening.** Every write to `out/forward-snapshots.csv` now takes a timestamped
+  backup to `out/backups/` first (pruned to the newest 30), records an `extraction_method`
+  provenance column (`llm` / `keyword` / `keyword_degraded`, migrated in place on old ledgers), and
+  runs a junk-label gate that rejects thin title-fragment labels. A fully degraded extraction run
+  (`keyword_degraded` — LLM enabled but every provider failed) skips snapshotting entirely rather
+  than polluting the ledger with generic keyword n-grams.
+
 ## Usage
 
 Two stages. **Stage 1** finds which high-CPM *domain* has the best demand/supply gap; **stage 2**
@@ -245,6 +272,17 @@ topic opportunity multiplied by the sampled video's or channel's proof strength.
 Reports also append the best proof rows to `out/evidence-snapshots.csv` with `pending` status, so
 the exact videos/channels that justified a category can be checked later instead of only the
 topic-level forecast.
+
+`youtube_niche.winners` also appends five viewer-facing enrichment columns to its CSV/MD output:
+`product_fit` (how well the niche supports selling the creator's own products — high-ticket
+coaching/courses > digital products > affiliate > AdSense-only; distinct from ad-CPM and never
+blended into `opportunity`), `positioning` (Learner-viable / Enthusiast / Expert-required, read
+off the niche's own newcomer-volume and authority-concentration metrics), `dominant_format`
+(listicle / explainer / story / news, classified from breakout titles), `replication_channels`
+(count of distinct small channels independently breaking out on the same theme — 3+ is the
+strongest replicability signal available here), and `hypothesis` (an LLM-generated "I help [X] do/
+overcome [Y]" positioning sentence, computed for the top 5 ranked niches per run). All five are
+report-only and additive; rows from other entry points (e.g. plain `--seeds` runs) leave them blank.
 
 Useful flags:
 
@@ -400,6 +438,30 @@ phrase; `monthly_searches`, `search_volume`, `volume`, or `monthly_volume` for d
 `cpm`, `rpm`, `estimated_cpm`, or `estimated_rpm` for monetization; and optional pre-normalized
 `demand_score`, `cpm_score`, or `rpm_score` values.
 
+## Data retention / YouTube ToS
+
+The YouTube API Services Developer Policies cap how long authorized data — including subscriber
+counts — may be retained, generally 30 days. `python -m youtube_niche.retention` enforces that
+limit against everything this tool writes to disk:
+
+```bash
+python -m youtube_niche.retention              # dry run: prints the plan, changes nothing
+python -m youtube_niche.retention --apply       # actually delete/scrub
+```
+
+Dry-run by default. When run with `--apply` it:
+
+- **deletes** raw per-video/per-channel evidence CSVs (`*-video-evidence.csv`,
+  `*-channel-evidence.csv`) older than 30 days;
+- **row-level scrubs** the raw metric columns (`views`, `subs`, `views_per_day`) from
+  `evidence-snapshots*.csv` rows past the window, in place — the row and its derived scores stay,
+  only the raw API numbers are blanked, so pending resolve-later checkpoints survive;
+- **purges** stale cached API responses from `.cache/youtube_niche.sqlite` by write timestamp.
+
+It **never touches** `out/forward-snapshots.csv` (scores only, no raw per-channel metrics) or
+`out/backups/` (assumed to be an intentional archive). Run it periodically (e.g. a monthly cron)
+if you keep long-lived `out/` and `.cache/` directories.
+
 ## Tests
 
 Logic and signals are tested offline (no keys/network):
@@ -432,6 +494,9 @@ youtube_niche/
   forward.py         forward-test snapshot capture and summaries
   evidence.py        ranked video/channel proof rows
   evidence_snapshot.py persistent video/channel proof registry
+  wayback.py         experimental: Wayback Machine backfill of historical subs/views (see
+                     module docstring for the measured small-channel coverage floor)
+  retention.py       YouTube ToS retention scrubber (see "Data retention / YouTube ToS")
 tests/test_logic.py  offline tests
 ```
 

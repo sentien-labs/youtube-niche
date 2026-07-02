@@ -1,10 +1,61 @@
 # Changelog
 
-## Unreleased
+## 2026-07-01
+
+A 2026-06-30 incident (one LLM backend went silently empty for a day, degrading niche extraction
+and writing a thin label into the live forward-test ledger without anyone noticing) motivated most
+of this batch: two reliability hardening passes, plus report-quality and compliance work queued up
+alongside it.
 
 ### Added
 
-- **Durability signal (5-year Trends base slope)**: a new long-run check separates durable veins
+- **LLM failover chain** (`llm.py`): on an empty response, the configured/primary LLM backend now
+  fails over through the remaining available providers in a fixed order (`agy` → `codex` → `claude`
+  → `grok` → `anthropic`). Every hop prints a `[llm]` warning so a degraded run is loud instead of
+  silent. Set `LLM_FALLBACK=0` to disable the chain and use only the configured primary. When every
+  provider in the chain still comes back empty, niche extraction (`winners.py`) falls back to
+  keyword n-grams and marks the run's `extraction_method` as `keyword_degraded`.
+- **Forward-ledger hardening** (`forward.py`): every write to `out/forward-snapshots.csv` now takes
+  a timestamped backup to `out/backups/` first (pruned to the newest 30), records an
+  `extraction_method` provenance column (`llm` / `keyword` / `keyword_degraded`, migrated in place
+  on existing ledgers), and runs a junk-label gate that rejects thin title-fragment labels before
+  they reach the ledger. A fully degraded extraction run (`keyword_degraded`) skips snapshotting
+  entirely rather than polluting the ledger with generic keyword n-grams.
+- **Google Trends SerpApi fallback** (`signals/trends.py`): `pytrends` is unofficial and its
+  upstream repo is dead (archived April 2025, chronic 429s). When it fails and `SERPAPI_KEY` is
+  set, both the 12-month momentum signal and the 5-year durability signal now fall back to SerpApi's
+  `google_trends` engine (plain HTTP, no new dependency). See `.env.example` for the free-tier
+  signup note.
+- **ToS retention scrubber** (`youtube_niche/retention.py`, new): `python -m youtube_niche.retention`
+  enforces the YouTube API Developer Policies' ~30-day raw-data retention limit against everything
+  this tool writes to disk. Dry-run by default; `--apply` deletes raw evidence CSVs older than 30
+  days, row-level-scrubs the `views`/`subs`/`views_per_day` columns from `evidence-snapshots*.csv`
+  ledger rows past the window (rows and derived scores are preserved), and purges stale cache rows.
+  `out/forward-snapshots.csv` and `out/backups/` are never touched.
+- **Report-only `product_fit` axis** (`monetization.py`, `domains.py`, `cli.py`): scores how well a
+  niche supports selling the creator's OWN products (high-ticket coaching/courses > digital
+  products > affiliate > AdSense-only), distinct from ad-CPM monetization. Per-domain base fit plus
+  topic-level commercial/service/free-intent keyword nudges. Report-only — never blended into
+  `opportunity` or any other existing score.
+- **Report enrichments** (new `formats.py`; `winners.py`/`report.py`/`llm.py`): per-niche
+  `dominant_format` (listicle/explainer/story/news, classified from breakout titles),
+  `replication_channels` (count of distinct small channels independently breaking out on the same
+  theme — 3+ is the strongest replicability signal available here), a `positioning` readout
+  (Learner-viable / Enthusiast / Expert-required, from the niche's own newcomer-volume/small-share/
+  authority-concentration metrics), and an LLM-generated "I help [X] do/overcome [Y]" positioning
+  hypothesis for the top 5 niches per run. Five new CSV columns: `product_fit`, `positioning`,
+  `dominant_format`, `replication_channels`, `hypothesis`.
+- **`niche-coach` skill** (`.claude/skills/niche-coach/`): a data-grounded niche-selection coach
+  that interviews for background/skills/interests, then validates candidate niches against this
+  repo's live demand/supply pipeline instead of asserting demand from priors.
+- **Wayback Machine backfill probe** (`youtube_niche/wayback.py`, new, experimental): queries the
+  Internet Archive's free CDX index for archived YouTube channel/watch pages and parses the exact
+  `subscriberCount`/`viewCount` out of embedded `ytInitialData` JSON, as a leakage-free retrospective
+  backfill source for channels the Archive happened to snapshot. ToS-advantaged (Internet Archive
+  data is not YouTube API data, so the 30-day retention rule does not apply to it), but coverage is
+  power-law by fame — see the module docstring for the empirical hit-rate on small channels.
+
+ a new long-run check separates durable veins
   from one-week flashes — `trends_durability` scores whether a niche sits on a structurally rising
   multi-year base (recent-year vs early-year YouTube-search interest). Surfaced as a `📈 durable` /
   `⚠️ fading` flag in `winners` output and as columns in the CSV/MD reports. Independent of the
